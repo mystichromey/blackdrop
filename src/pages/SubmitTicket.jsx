@@ -1163,7 +1163,7 @@ React.useEffect(() => {
 function enhanceScanLook(canvas) {
   const ctx = canvas.getContext("2d");
 
-  ctx.filter = "brightness(125%) contrast(140%)";
+  ctx.filter = "brightness(160%) contrast(160%)";
   ctx.drawImage(canvas, 0, 0);
 
   ctx.filter = "none";
