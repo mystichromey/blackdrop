@@ -1101,6 +1101,8 @@ const streamRef=React.useRef(null);
 const fileInputRef = React.useRef(null);
 const cameraInputRef = React.useRef(null);
 const [captured,setCaptured]=React.useState(null);
+const [cropRect, setCropRect] = React.useState(null);
+const dragRef = React.useRef(null);
 const [ready,setReady] = React.useState(false);
 
 React.useEffect(() => {
@@ -1192,6 +1194,12 @@ function capture() {
 
   const data = canvas.toDataURL("image/jpeg", 0.7);
   setCaptured(data);
+setCropRect({
+  x: width * 0.1,
+  y: height * 0.1,
+  w: width * 0.8,
+  h: height * 0.8
+});
 }
 
 function handleFileUpload(e){
@@ -1219,6 +1227,46 @@ img.src = event.target.result;
 };
 reader.readAsDataURL(file);
 }
+
+React.useEffect(()=>{
+  function move(e){
+    if(!dragRef.current || !cropRect) return;
+
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+
+    const dx = clientX - dragRef.current.startX;
+    const dy = clientY - dragRef.current.startY;
+
+    dragRef.current.startX = clientX;
+    dragRef.current.startY = clientY;
+
+    setCropRect(prev=>{
+      if(!prev) return prev;
+      return {
+        ...prev,
+        x: prev.x + dx * (canvasRef.current.width / window.innerWidth),
+        y: prev.y + dy * (canvasRef.current.height / window.innerWidth)
+      };
+    });
+  }
+
+  function stop(){
+    dragRef.current=null;
+  }
+
+  window.addEventListener("mousemove",move);
+  window.addEventListener("mouseup",stop);
+  window.addEventListener("touchmove",move);
+  window.addEventListener("touchend",stop);
+
+  return ()=>{
+    window.removeEventListener("mousemove",move);
+    window.removeEventListener("mouseup",stop);
+    window.removeEventListener("touchmove",move);
+    window.removeEventListener("touchend",stop);
+  };
+},[cropRect]);
 
 if(!open) return null;
 
@@ -1257,7 +1305,33 @@ onChange={handleFileUpload}
 </>
 ):(
 <>
-<img src={captured} style={M.video}/>
+<div style={{ position: "relative" }}>
+  <img
+    src={captured}
+    style={{ width: "100%", borderRadius: 8 }}
+    alt=""
+  />
+
+  {cropRect && (
+    <div
+      onMouseDown={(e)=>dragRef.current={type:"move",startX:e.clientX,startY:e.clientY}}
+      onTouchStart={(e)=>{
+        const t=e.touches[0];
+        dragRef.current={type:"move",startX:t.clientX,startY:t.clientY};
+      }}
+      style={{
+        position:"absolute",
+        left:`${(cropRect.x / canvasRef.current.width) * 100}%`,
+        top:`${(cropRect.y / canvasRef.current.height) * 100}%`,
+        width:`${(cropRect.w / canvasRef.current.width) * 100}%`,
+        height:`${(cropRect.h / canvasRef.current.height) * 100}%`,
+        border:"2px solid #D4AF37",
+        boxSizing:"border-box",
+        cursor:"move"
+      }}
+    />
+  )}
+</div>
 <div style={{display:"flex",gap:10}}>
 <button
 style={M.secondaryBtn}
@@ -1266,7 +1340,37 @@ RETAKE
 </button>
 <button
 style={M.primaryBtn}
-onClick={()=>onUse(captured)}>
+onClick={()=>{
+  if(!cropRect){
+    onUse(captured);
+    return;
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = cropRect.w;
+  canvas.height = cropRect.h;
+
+  const ctx = canvas.getContext("2d");
+
+  const img = new Image();
+  img.onload = ()=>{
+    ctx.drawImage(
+      img,
+      cropRect.x,
+      cropRect.y,
+      cropRect.w,
+      cropRect.h,
+      0,
+      0,
+      cropRect.w,
+      cropRect.h
+    );
+
+    const final = canvas.toDataURL("image/jpeg",0.8);
+    onUse(final);
+  };
+  img.src = captured;
+}}>
 USE
 </button>
 </div>
