@@ -718,9 +718,41 @@ setIsSubmitting(false);
       }
 
     } catch {
-      alert("Network error");
-      setIsSubmitting(false);
+  // Save locally if offline
+  const pending = JSON.parse(localStorage.getItem("offlineTickets") || "[]");
+  pending.push(payload);
+  localStorage.setItem("offlineTickets", JSON.stringify(pending));
+
+  alert("No internet. Ticket saved offline and will send automatically.");
+
+  setIsSubmitting(false);
+}
+
+
+useEffect(() => {
+  async function syncOfflineTickets() {
+    const pending = JSON.parse(localStorage.getItem("offlineTickets") || "[]");
+    if (!pending.length) return;
+
+    for (let ticket of pending) {
+      try { // also add updated here
+        await fetch("https://script.google.com/macros/s/AKfycbzws4Mt7KMVkLdc11IJNOtPyAWgZOP80cDiFffYZK1u_hJc4KQ-OEDtjo3_uZMGjV2v/exec", {
+          method: "POST",
+          headers: { "Content-Type": "text/plain;charset=utf-8" },
+          body: JSON.stringify(ticket)
+        });
+      } catch {
+        return; // still offline
+      }
     }
+
+    localStorage.removeItem("offlineTickets");
+    alert("Offline tickets synced.");
+  }
+
+  window.addEventListener("online", syncOfflineTickets);
+  syncOfflineTickets();
+}, []);
 
   }}
 >
