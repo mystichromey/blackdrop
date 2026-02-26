@@ -283,6 +283,33 @@ setScannerTarget(null);
 }
 
 const [scrollY,setScrollY]=useState(0);
+
+useEffect(() => {
+  async function syncOfflineTickets() {
+    const pending = JSON.parse(localStorage.getItem("offlineTickets") || "[]");
+    if (!pending.length) return;
+
+    for (let ticket of pending) {
+      try { // also add updated here
+        await fetch("https://script.google.com/macros/s/AKfycbzws4Mt7KMVkLdc11IJNOtPyAWgZOP80cDiFffYZK1u_hJc4KQ-OEDtjo3_uZMGjV2v/exec", {
+          method: "POST",
+          headers: { "Content-Type": "text/plain;charset=utf-8" },
+          body: JSON.stringify(ticket)
+        });
+      } catch {
+        return; // still offline
+      }
+    }
+
+    localStorage.removeItem("offlineTickets");
+    alert("Offline tickets synced.");
+  }
+
+  window.addEventListener("online", syncOfflineTickets);
+  syncOfflineTickets();
+}, []);
+
+
 useEffect(() => {
   const handleScroll = () => {
     setScrollY(window.pageYOffset);
@@ -729,30 +756,7 @@ setIsSubmitting(false);
 }
 
 
-useEffect(() => {
-  async function syncOfflineTickets() {
-    const pending = JSON.parse(localStorage.getItem("offlineTickets") || "[]");
-    if (!pending.length) return;
 
-    for (let ticket of pending) {
-      try { // also add updated here
-        await fetch("https://script.google.com/macros/s/AKfycbzws4Mt7KMVkLdc11IJNOtPyAWgZOP80cDiFffYZK1u_hJc4KQ-OEDtjo3_uZMGjV2v/exec", {
-          method: "POST",
-          headers: { "Content-Type": "text/plain;charset=utf-8" },
-          body: JSON.stringify(ticket)
-        });
-      } catch {
-        return; // still offline
-      }
-    }
-
-    localStorage.removeItem("offlineTickets");
-    alert("Offline tickets synced.");
-  }
-
-  window.addEventListener("online", syncOfflineTickets);
-  syncOfflineTickets();
-}, []);
 
   }}
 >
@@ -1099,6 +1103,19 @@ const cameraInputRef = React.useRef(null);
 const [captured,setCaptured]=React.useState(null);
 const [ready,setReady] = React.useState(false);
 
+const [cvReady, setCvReady] = React.useState(false);
+
+React.useEffect(() => {
+  const checkCV = () => {
+    if (window.cv && window.cv.Mat) {
+      setCvReady(true);
+    } else {
+      setTimeout(checkCV, 100);
+    }
+  };
+  checkCV();
+}, []);
+
 
 React.useEffect(() => {
   if (!open) return;
@@ -1148,6 +1165,29 @@ React.useEffect(() => {
 
 }, [open]);
 
+function enhanceScanLook(canvas) {
+  const ctx = canvas.getContext("2d");
+
+  // grayscale + contrast
+  ctx.filter = "grayscale(100%) contrast(180%) brightness(110%)";
+  ctx.drawImage(canvas, 0, 0);
+
+  // threshold (scanner look)
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d = imageData.data;
+
+  for (let i = 0; i < d.length; i += 4) {
+    const avg = (d[i] + d[i + 1] + d[i + 2]) / 3;
+    const val = avg > 150 ? 255 : 0;
+    d[i] = d[i + 1] = d[i + 2] = val;
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+
+  // IMPORTANT: reset filter so later draws aren’t affected
+  ctx.filter = "none";
+}
+
 function capture() {
   const video = videoRef.current;
   if (!video) return;
@@ -1178,10 +1218,65 @@ function capture() {
 
   ctx.drawImage(video, 0, 0, width, height);
 
-  // Compress image raise = slower
+if (!cvReady) {
   const data = canvas.toDataURL("image/jpeg", 0.6);
-
   setCaptured(data);
+  return;
+}
+
+// OpenCV Processing
+let src = cv.imread(canvas);
+let gray = new cv.Mat();
+cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+
+let blurred = new cv.Mat();
+cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
+
+let edges = new cv.Mat();
+cv.Canny(blurred, edges, 75, 200);
+
+let contours = new cv.MatVector();
+let hierarchy = new cv.Mat();
+
+cv.findContours(
+  edges,
+  contours,
+  hierarchy,
+  cv.RETR_LIST,
+  cv.CHAIN_APPROX_SIMPLE
+);
+
+let maxArea = 0;
+let bestContour = null;
+
+for (let i = 0; i < contours.size(); i++) {
+  let cnt = contours.get(i);
+  let area = cv.contourArea(cnt);
+
+  if (area > maxArea) {
+    maxArea = area;
+    bestContour = cnt;
+  }
+}
+
+if (bestContour) {
+  let rect = cv.boundingRect(bestContour);
+  let roi = src.roi(rect);
+  cv.imshow(canvas, roi);
+  roi.delete();
+}
+
+src.delete();
+gray.delete();
+blurred.delete();
+edges.delete();
+contours.delete();
+hierarchy.delete();
+
+enhanceScanLook(canvas);
+
+const data = canvas.toDataURL("image/jpeg", 0.6);
+setCaptured(data);
 }
 
 function handleFileUpload(e){
@@ -1198,13 +1293,11 @@ canvas.width = img.width;
 canvas.height = img.height;
 
 const ctx = canvas.getContext("2d");
-ctx.drawImage(img,0,0);
+ctx.drawImage(img, 0, 0);
 
-// enhance
-ctx.filter="contrast(140%) brightness(115%)";
-ctx.drawImage(canvas,0,0);
+enhanceScanLook(canvas);
 
-const data = canvas.toDataURL("image/jpeg",0.9);
+const data = canvas.toDataURL("image/jpeg", 0.9);
 setCaptured(data);
 };
 img.src = event.target.result;
