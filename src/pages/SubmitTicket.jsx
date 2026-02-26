@@ -1246,16 +1246,23 @@ cv.findContours(
   cv.CHAIN_APPROX_SIMPLE
 );
 
-let maxArea = 0;
 let bestContour = null;
+let maxArea = 0;
 
 for (let i = 0; i < contours.size(); i++) {
   let cnt = contours.get(i);
   let area = cv.contourArea(cnt);
 
-  if (area > maxArea) {
+  if (area < 5000) continue; // ignore tiny junk
+
+  let peri = cv.arcLength(cnt, true);
+  let approx = new cv.Mat();
+  cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
+
+  // only accept 4-sided shapes
+  if (approx.rows === 4 && area > maxArea) {
     maxArea = area;
-    bestContour = cnt;
+    bestContour = approx;
   }
 }
 
