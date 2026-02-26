@@ -1156,7 +1156,7 @@ React.useEffect(() => {
 function enhanceScanLook(canvas) {
   const ctx = canvas.getContext("2d");
 
-  ctx.filter = "grayscale(100%) contrast(170%) brightness(110%)";
+  ctx.filter = "contrast(140%) brightness(105%)";
   ctx.drawImage(canvas, 0, 0);
 
   ctx.filter = "none";
@@ -1166,40 +1166,38 @@ function capture() {
   const video = videoRef.current;
   if (!video) return;
 
-  const maxDimension = 1000;
-
-  let width = video.videoWidth;
-  let height = video.videoHeight;
-
-  if (width > height) {
-    if (width > maxDimension) {
-      height = Math.round(height * (maxDimension / width));
-      width = maxDimension;
-    }
-  } else {
-    if (height > maxDimension) {
-      width = Math.round(width * (maxDimension / height));
-      height = maxDimension;
-    }
-  }
+  const videoWidth = video.videoWidth;
+  const videoHeight = video.videoHeight;
 
   const canvas = canvasRef.current;
-  canvas.width = width;
-  canvas.height = height;
+
+  // Guide box dimensions (same as overlay)
+  const cropX = videoWidth * 0.10;
+  const cropY = videoHeight * 0.15;
+  const cropW = videoWidth * 0.80;
+  const cropH = videoHeight * 0.70;
+
+  canvas.width = cropW;
+  canvas.height = cropH;
 
   const ctx = canvas.getContext("2d");
-  ctx.drawImage(video, 0, 0, width, height);
+
+  ctx.drawImage(
+    video,
+    cropX,
+    cropY,
+    cropW,
+    cropH,
+    0,
+    0,
+    cropW,
+    cropH
+  );
 
   enhanceScanLook(canvas);
 
-  const data = canvas.toDataURL("image/jpeg", 0.7);
+  const data = canvas.toDataURL("image/jpeg", 0.9); // higher quality
   setCaptured(data);
-setCropRect({
-  x: width * 0.1,
-  y: height * 0.1,
-  w: width * 0.8,
-  h: height * 0.8
-});
 }
 
 function handleFileUpload(e){
@@ -1275,12 +1273,28 @@ return(
 <div style={M.modal}>
 {!captured ? (
 <>
-<video
-ref={videoRef}
-style={M.video}
-playsInline
-autoPlay
-/>
+<div style={{ position: "relative" }}>
+  <video
+    ref={videoRef}
+    style={M.video}
+    playsInline
+    autoPlay
+  />
+
+  {/* Guide Box */}
+  <div
+    style={{
+      position: "absolute",
+      top: "15%",
+      left: "10%",
+      width: "80%",
+      height: "70%",
+      border: "3px solid #D4AF37",
+      boxSizing: "border-box",
+      pointerEvents: "none"
+    }}
+  />
+</div>
 
 <div style={{display:"flex",gap:10,marginBottom:10}}>
 <button style={M.primaryBtn} onClick={capture} disabled={!ready}>
