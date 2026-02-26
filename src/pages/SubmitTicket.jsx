@@ -1113,8 +1113,12 @@ React.useEffect(() => {
   async function startCamera() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment" }
-      });
+  video: {
+    facingMode: "environment",
+    width: { ideal: 1920 },
+    height: { ideal: 1080 }
+  }
+});
 
       if (cancelled) return;
 
@@ -1156,10 +1160,23 @@ React.useEffect(() => {
 function enhanceScanLook(canvas) {
   const ctx = canvas.getContext("2d");
 
-  ctx.filter = "contrast(140%) brightness(105%)";
+  // Increase brightness and contrast safely
+  ctx.filter = "brightness(120%) contrast(150%)";
   ctx.drawImage(canvas, 0, 0);
 
   ctx.filter = "none";
+
+  // Subtle sharpening
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const data = imageData.data;
+
+  for (let i = 0; i < data.length; i += 4) {
+    data[i] = Math.min(255, data[i] * 1.05);
+    data[i+1] = Math.min(255, data[i+1] * 1.05);
+    data[i+2] = Math.min(255, data[i+2] * 1.05);
+  }
+
+  ctx.putImageData(imageData, 0, 0);
 }
 
 function capture() {
@@ -1196,7 +1213,7 @@ function capture() {
 
   enhanceScanLook(canvas);
 
-  const data = canvas.toDataURL("image/jpeg", 0.9); // higher quality
+  const data = canvas.toDataURL("image/png", ); // higher quality
   setCaptured(data);
 }
 
