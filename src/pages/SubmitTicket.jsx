@@ -1063,6 +1063,7 @@ const videoRef=React.useRef(null);
 const canvasRef=React.useRef(null);
 const streamRef=React.useRef(null);
 const fileInputRef = React.useRef(null);
+const cameraInputRef = React.useRef(null);
 const [captured,setCaptured]=React.useState(null);
 const [ready,setReady] = React.useState(false);
 
@@ -1194,7 +1195,7 @@ autoPlay
 />
 
 <div style={{display:"flex",gap:10,marginBottom:10}}>
-<button style={M.primaryBtn} onClick={capture} disabled={!ready}>
+<button style={M.primaryBtn} onClick={() => cameraInputRef.current.click()}>
 CAPTURE
 </button>
 
@@ -1210,6 +1211,14 @@ UPLOAD
 type="file"
 accept="image/*"
 capture="environment"
+ref={cameraInputRef}
+style={{display:"none"}}
+onChange={handleFileUpload}
+/>
+
+<input
+type="file"
+accept="image/*"
 ref={fileInputRef}
 style={{display:"none"}}
 onChange={handleFileUpload}
