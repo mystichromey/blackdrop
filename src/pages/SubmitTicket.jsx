@@ -1168,23 +1168,9 @@ React.useEffect(() => {
 function enhanceScanLook(canvas) {
   const ctx = canvas.getContext("2d");
 
-  // grayscale + contrast
-  ctx.filter = "grayscale(100%) contrast(180%) brightness(110%)";
+  ctx.filter = "grayscale(100%) contrast(170%) brightness(110%)";
   ctx.drawImage(canvas, 0, 0);
 
-  // threshold (scanner look)
-  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const d = imageData.data;
-
-  for (let i = 0; i < d.length; i += 4) {
-    const avg = (d[i] + d[i + 1] + d[i + 2]) / 3;
-    const val = avg > 150 ? 255 : 0;
-    d[i] = d[i + 1] = d[i + 2] = val;
-  }
-
-  ctx.putImageData(imageData, 0, 0);
-
-  // IMPORTANT: reset filter so later draws aren’t affected
   ctx.filter = "none";
 }
 
