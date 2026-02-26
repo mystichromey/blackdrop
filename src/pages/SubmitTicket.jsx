@@ -1103,20 +1103,6 @@ const cameraInputRef = React.useRef(null);
 const [captured,setCaptured]=React.useState(null);
 const [ready,setReady] = React.useState(false);
 
-const [cvReady, setCvReady] = React.useState(false);
-
-React.useEffect(() => {
-  const checkCV = () => {
-    if (window.cv && window.cv.Mat) {
-      setCvReady(true);
-    } else {
-      setTimeout(checkCV, 100);
-    }
-  };
-  checkCV();
-}, []);
-
-
 React.useEffect(() => {
   if (!open) return;
 
@@ -1178,12 +1164,11 @@ function capture() {
   const video = videoRef.current;
   if (!video) return;
 
-  const maxDimension = 1000; // keep under 1 million pixels cause bug
+  const maxDimension = 1000;
 
   let width = video.videoWidth;
   let height = video.videoHeight;
 
-  //Resize Image
   if (width > height) {
     if (width > maxDimension) {
       height = Math.round(height * (maxDimension / width));
@@ -1201,77 +1186,12 @@ function capture() {
   canvas.height = height;
 
   const ctx = canvas.getContext("2d");
-
   ctx.drawImage(video, 0, 0, width, height);
 
-if (!cvReady) {
-  const data = canvas.toDataURL("image/jpeg", 0.6);
+  enhanceScanLook(canvas);
+
+  const data = canvas.toDataURL("image/jpeg", 0.7);
   setCaptured(data);
-  return;
-}
-
-// OpenCV Processing
-let src = cv.imread(canvas);
-let gray = new cv.Mat();
-cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
-
-let blurred = new cv.Mat();
-cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
-
-let edges = new cv.Mat();
-cv.Canny(blurred, edges, 75, 200);
-
-let contours = new cv.MatVector();
-let hierarchy = new cv.Mat();
-
-cv.findContours(
-  edges,
-  contours,
-  hierarchy,
-  cv.RETR_LIST,
-  cv.CHAIN_APPROX_SIMPLE
-);
-
-let bestContour = null;
-let maxArea = 0;
-const imageArea = width * height;
-
-for (let i = 0; i < contours.size(); i++) {
-  let cnt = contours.get(i);
-  let area = cv.contourArea(cnt);
-
-  if (area < imageArea * 0.3) continue; // must be at least 30% of image
-
-  let peri = cv.arcLength(cnt, true);
-  let approx = new cv.Mat();
-  cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
-
-  if (approx.rows === 4 && area > maxArea) {
-    maxArea = area;
-    bestContour = approx;
-  }
-}
-
-if (bestContour && maxArea > imageArea * 0.5) {
-  let rect = cv.boundingRect(bestContour);
-  let roi = src.roi(rect);
-  cv.imshow(canvas, roi);
-  roi.delete();
-} 
-// else: do NOT crop, just leave original image
-
-src.delete();
-gray.delete();
-blurred.delete();
-edges.delete();
-contours.delete();
-hierarchy.delete();
-
-enhanceScanLook(canvas);
-
-const data = canvas.toDataURL("image/jpeg", 0.6);
-setCaptured(data);
-console.log("CV Ready:", cvReady);
 }
 
 function handleFileUpload(e){
