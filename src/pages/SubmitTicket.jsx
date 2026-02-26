@@ -1277,6 +1277,7 @@ enhanceScanLook(canvas);
 
 const data = canvas.toDataURL("image/jpeg", 0.6);
 setCaptured(data);
+console.log("CV Ready:", cvReady);
 }
 
 function handleFileUpload(e){
@@ -1320,7 +1321,7 @@ autoPlay
 />
 
 <div style={{display:"flex",gap:10,marginBottom:10}}>
-<button style={M.primaryBtn} onClick={() => cameraInputRef.current.click()}>
+<button style={M.primaryBtn} onClick={capture} disabled={!ready}>
 CAPTURE
 </button>
 
@@ -1331,15 +1332,6 @@ onClick={()=>fileInputRef.current.click()}
 UPLOAD
 </button>
 </div>
-
-<input
-type="file"
-accept="image/*"
-capture="environment"
-ref={cameraInputRef}
-style={{display:"none"}}
-onChange={handleFileUpload}
-/>
 
 <input
 type="file"
