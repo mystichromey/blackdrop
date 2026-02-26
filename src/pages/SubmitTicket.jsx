@@ -1248,30 +1248,31 @@ cv.findContours(
 
 let bestContour = null;
 let maxArea = 0;
+const imageArea = width * height;
 
 for (let i = 0; i < contours.size(); i++) {
   let cnt = contours.get(i);
   let area = cv.contourArea(cnt);
 
-  if (area < 5000) continue; // ignore tiny junk
+  if (area < imageArea * 0.3) continue; // must be at least 30% of image
 
   let peri = cv.arcLength(cnt, true);
   let approx = new cv.Mat();
   cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
 
-  // only accept 4-sided shapes
   if (approx.rows === 4 && area > maxArea) {
     maxArea = area;
     bestContour = approx;
   }
 }
 
-if (bestContour) {
+if (bestContour && maxArea > imageArea * 0.5) {
   let rect = cv.boundingRect(bestContour);
   let roi = src.roi(rect);
   cv.imshow(canvas, roi);
   roi.delete();
-}
+} 
+// else: do NOT crop, just leave original image
 
 src.delete();
 gray.delete();
