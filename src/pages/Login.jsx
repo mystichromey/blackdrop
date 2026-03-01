@@ -5,6 +5,7 @@ const API_URL = "https://script.google.com/macros/s/AKfycbzws4Mt7KMVkLdc11IJNOtP
 export default function Login({ onLogin }) {
 
   const [phone, setPhone] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
 
   function handlePhoneChange(e) {
     const numbersOnly = e.target.value.replace(/\D/g, "");
@@ -18,20 +19,23 @@ async function handleLogin() {
     return;
   }
 
+  if (isLoading) return;
+
+  setIsLoading(true);
+
   try {
 
     const response = await fetch(API_URL + "?t=" + Date.now());
 
     if (!response.ok) {
       alert("Server error");
+      setIsLoading(false);
       return;
     }
 
     const allowedPhones = await response.json();
 
-    // force string comparison
     const phoneString = String(phone).trim();
-
     const match = allowedPhones.some(p => String(p).trim() === phoneString);
 
     if (match) {
@@ -41,17 +45,17 @@ async function handleLogin() {
     } else {
 
       alert("This phone number is not authorized.");
+      setIsLoading(false);
 
     }
 
   } catch (err) {
 
     console.error(err);
-
     alert("Connection failed.");
+    setIsLoading(false);
 
   }
-
 }
 
   return (
@@ -82,11 +86,21 @@ async function handleLogin() {
         />
 
         <button
-          style={styles.button}
-          onClick={handleLogin}
-        >
-          LOGIN
-        </button>
+  style={{
+    ...styles.button,
+    opacity: isLoading ? 0.8 : 1,
+    cursor: isLoading ? "not-allowed" : "pointer",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8
+  }}
+  onClick={handleLogin}
+  disabled={isLoading}
+>
+  {isLoading && <div style={styles.spinner}></div>}
+  {isLoading ? "LOGGING IN..." : "LOGIN"}
+</button>
 
         <div style={styles.footer}>
           Secure Access Required
@@ -180,5 +194,14 @@ const styles = {
     textAlign: "center",
     marginTop: "14px",
   },
+
+  spinner: {
+  width: 14,
+  height: 14,
+  border: "2px solid rgba(0,0,0,0.3)",
+  borderTop: "2px solid black",
+  borderRadius: "50%",
+  animation: "spin 0.8s linear infinite"
+},
 
 };
