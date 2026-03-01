@@ -9,23 +9,27 @@ import TicketSuccess from "./pages/TicketSuccess.jsx";
 
 function App() {
 
-  const [phone, setPhone] = useState(null);
+  const [phone, setPhone] = useState(() => {
+    return localStorage.getItem("bd_phone");
+  });
   const [page, setPage] = useState("login");
   const [editTicket, setEditTicket] = useState(null);
 
   function handleLogin(phoneNumber) {
-    setPhone(phoneNumber);
-    setPage("dashboard");
-  }
+  localStorage.setItem("bd_phone", phoneNumber);
+  setPhone(phoneNumber);
+  setPage("dashboard");
+}
 
   function handleOpenQueue() {
   setPage("queue");
   }
 
   function handleLogout() {
-    setPhone(null);
-    setPage("login");
-  }
+  localStorage.removeItem("bd_phone");
+  setPhone(null);
+  setPage("login");
+}
 
   function handleStartTicket() {
     setPage("submit");
