@@ -12,7 +12,9 @@ function App() {
   const [phone, setPhone] = useState(() => {
     return localStorage.getItem("bd_phone");
   });
-  const [page, setPage] = useState("login");
+  const [page, setPage] = useState(() => {
+    return localStorage.getItem("bd_phone") ? "dashboard" : "login";
+  });
   const [editTicket, setEditTicket] = useState(null);
 
   function handleLogin(phoneNumber) {
