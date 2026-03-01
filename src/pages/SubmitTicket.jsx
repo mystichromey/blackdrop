@@ -192,6 +192,7 @@ function clearSignature() {
 function isNonEmpty(v) {
   return String(v ?? "").trim().length > 0;
 }
+const isExxon = form.client === "Exxon";
 
 function loadComplete(load) {
 
@@ -328,8 +329,6 @@ const dispatchLabel = (() => {
   if (form.client === "Other") return "DISPATCH #";
   return "DISPATCH #";
 })();
-
-const isExxon = form.client === "Exxon";
 
 return(
 
