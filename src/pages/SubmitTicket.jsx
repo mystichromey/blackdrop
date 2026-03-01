@@ -734,6 +734,7 @@ onClick={addLoad}
 
       await res.text();
       setIsSubmitting(false);
+      console.log("Calling onComplete");
       onComplete();
 
     } catch {
