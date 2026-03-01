@@ -5,6 +5,7 @@ import Login from "./pages/Login.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
 import SubmitTicket from "./pages/SubmitTicket.jsx";
 import Queue from "./pages/Queue.jsx";
+import TicketSuccess from "./pages/TicketSuccess.jsx";
 
 function App() {
 
@@ -35,24 +36,32 @@ function App() {
   }
 
   if (!phone) {
-    return <Login onLogin={handleLogin} />;
-  }
+  return <Login onLogin={handleLogin} />;
+}
 
-  if (page === "dashboard") {
-    return (
-      <Dashboard
-  phone={phone}
-  onLogout={handleLogout}
-  onStartTicket={() => {
-    setEditTicket(null);
-    setPage("submit");
-  }}
-  onOpenQueue={handleOpenQueue}
-/>
-    );
-  }
+if (page === "success") {
+  return (
+    <TicketSuccess
+      onBack={() => setPage("dashboard")}
+    />
+  );
+}
 
-  if (page === "queue") {
+if (page === "dashboard") {
+  return (
+    <Dashboard
+      phone={phone}
+      onLogout={handleLogout}
+      onStartTicket={() => {
+        setEditTicket(null);
+        setPage("submit");
+      }}
+      onOpenQueue={handleOpenQueue}
+    />
+  );
+}
+
+if (page === "queue") {
   return (
     <Queue
       phone={phone}
@@ -65,14 +74,14 @@ function App() {
   );
 }
 
-  if (page === "submit") {
+if (page === "submit") {
   return (
     <SubmitTicket
       phone={phone}
       editTicket={editTicket}
       onComplete={() => {
         setEditTicket(null);
-        setPage("dashboard");
+        setPage("success");
       }}
     />
   );
