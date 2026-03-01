@@ -196,10 +196,10 @@ function isNonEmpty(v) {
 function loadComplete(load) {
 
   const baseRequired =
-    isNonEmpty(load.geminiRef) &&
-    isNonEmpty(load.loadTicket) &&
-    isNonEmpty(load.bbls) &&
-    !isNaN(parseFloat(load.bbls));
+  (!isExxon || isNonEmpty(load.geminiRef)) &&
+  isNonEmpty(load.loadTicket) &&
+  isNonEmpty(load.bbls) &&
+  !isNaN(parseFloat(load.bbls));
 
   // Manifest options
   if (load.fluid === "Manifest") {
@@ -320,6 +320,17 @@ useEffect(() => {
 
 const progressTranslate = Math.min(scrollY * 0.2, 40);
 
+const dispatchLabel = (() => {
+  if (form.client === "Exxon") return "GEMINI DISPATCH #";
+  if (form.client === "Oxy") return "IRONSIGHT JOB #";
+  if (form.client === "Western Midstream") return "IRONSIGHT JOB #";
+  if (form.client === "Chevron") return "DISPATCH #";
+  if (form.client === "Other") return "DISPATCH #";
+  return "DISPATCH #";
+})();
+
+const isExxon = form.client === "Exxon";
+
 return(
 
 <div style={S.container}>
@@ -384,7 +395,7 @@ onChange={e=>update("fieldTicket",e.target.value)}
 </div>
 
 <div style={S.col}>
-<Label text="GEMINI DISPATCH #" required/>
+<Label text={dispatchLabel} required/>
 <input
 style={S.input}
 value={form.dispatch}
@@ -503,13 +514,17 @@ aria-label="Delete load"
 
 </div>
 
-<Label text="GEMINI DISPATCH REF #" required/>
+{isExxon && (
+  <>
+    <Label text="GEMINI DISPATCH REF #" required/>
 
-<input
-style={S.input}
-value={load.geminiRef}
-onChange={e=>updateLoad(index,"geminiRef",e.target.value)}
-/>
+    <input
+      style={S.input}
+      value={load.geminiRef}
+      onChange={e=>updateLoad(index,"geminiRef",e.target.value)}
+    />
+  </>
+)}
 <Label text="LOAD TICKET NUMBER" required/>
 <input
 style={S.input}
