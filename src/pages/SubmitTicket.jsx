@@ -1,7 +1,6 @@
 import React, { useState, useMemo, useEffect } from "react";
 
 export default function SubmitTicket({ phone, onComplete, editTicket }){
-
 const scrollRef = React.useRef(null);
 const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -308,7 +307,6 @@ useEffect(() => {
   window.addEventListener("online", syncOfflineTickets);
   syncOfflineTickets();
 }, []);
-
 
 useEffect(() => {
   const handleScroll = () => {
@@ -734,15 +732,9 @@ onClick={addLoad}
         }
       );
 
-      const result = await res.json();
-
-      if (result.success) {
-        onComplete();
-setIsSubmitting(false);
-      } else {
-        alert("Server error");
-        setIsSubmitting(false);
-      }
+      await res.text();
+      setIsSubmitting(false);
+      onComplete();
 
     } catch {
   // Save locally if offline
@@ -1115,11 +1107,8 @@ React.useEffect(() => {
       const stream = await navigator.mediaDevices.getUserMedia({
   video: {
     facingMode: { ideal: "environment" },
-    width: { ideal: 1920 },
-    height: { ideal: 1080 },
-    focusMode: "continuous",
-    exposureMode: "continuous",
-    whiteBalanceMode: "continuous"
+    width: { min: 1280, ideal: 1920, max: 4096 },
+    height: { min: 720, ideal: 1080, max: 2160 }
   }
 });
 
@@ -1130,6 +1119,8 @@ React.useEffect(() => {
 
       video.srcObject = stream;
       await video.play();
+
+      console.log("Actual video size:", video.videoWidth, video.videoHeight);
 
       streamRef.current = stream;
 
@@ -1173,12 +1164,11 @@ function capture() {
   const video = videoRef.current;
   if (!video) return;
 
+  const canvas = canvasRef.current;
+
   const videoWidth = video.videoWidth;
   const videoHeight = video.videoHeight;
 
-  const canvas = canvasRef.current;
-
-  // Guide box dimensions (same as overlay)
   const cropX = videoWidth * 0.10;
   const cropY = videoHeight * 0.15;
   const cropW = videoWidth * 0.80;
@@ -1201,9 +1191,7 @@ function capture() {
     cropH
   );
 
-  enhanceScanLook(canvas);
-
-  const data = canvas.toDataURL("image/png", ); // higher quality
+  const data = canvas.toDataURL("image/png"); // PNG for sharp text
   setCaptured(data);
 }
 
@@ -1457,11 +1445,17 @@ cursor:"pointer"
 }
 };
 
-const style = document.createElement("style");
-style.innerHTML = `
-@keyframes spin {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
-}
-`;
-document.head.appendChild(style);
+useEffect(() => {
+  const style = document.createElement("style");
+  style.innerHTML = `
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+  `;
+  document.head.appendChild(style);
+
+  return () => {
+    document.head.removeChild(style);
+  };
+}, []);
