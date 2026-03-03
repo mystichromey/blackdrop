@@ -1117,42 +1117,35 @@ React.useEffect(() => {
 
   let cancelled = false;
 
+  setReady(false);
+  setCaptured(null);
+
   async function startCamera() {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-  video: {
-    facingMode: { ideal: "environment" },
-    width: { min: 1280, ideal: 1920, max: 4096 },
-    height: { min: 720, ideal: 1080, max: 2160 }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: "environment" },
+        width: { ideal: 1920 },
+        height: { ideal: 1080 }
+      }
+    });
+
+    if (cancelled) return;
+
+    const video = videoRef.current;
+    if (!video) return;
+
+    streamRef.current = stream;
+    video.srcObject = stream;
+
+    video.onloadeddata = () => {
+      setReady(true);
+    };
+
+  } catch (err) {
+    console.error("Camera error:", err);
   }
-});
-
-      if (cancelled) return;
-
-      const video = videoRef.current;
-      if (!video) return;
-
-      video.srcObject = stream;
-      await video.play();
-
-      console.log("Actual video size:", video.videoWidth, video.videoHeight);
-
-      streamRef.current = stream;
-
-      video.onloadedmetadata = () => {
-  video.play();
-};
-
-video.onplaying = () => {
-  setReady(true);
-};
-
-      checkReady();
-
-    } catch (err) {
-      console.error("Camera error:", err);
-    }
-  }
+}
 
   requestAnimationFrame(startCamera);
 
