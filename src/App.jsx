@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useRef } from "react";
 
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
 const API_URL =
-  "https://script.google.com/macros/s/AKfycbwumog0-0BpUkZBvj9LhcQe6dNMjUwqbqLgC-becDR2SjMUoNCG2ZKHZ7z-3Pdf0rROpQ/exec";
+  "https://script.google.com/macros/s/AKfycbwVpYsWq79H8prvTbn0d-xtZcKMzuIrBInM25IavIDgYfe2QEko4kpoYREYheN5svd6/exec";
 
 // ─── DESIGN TOKENS ───────────────────────────────────────────────────────────
 const T = {
@@ -657,10 +657,14 @@ function SubmitTicket({ phone, onComplete, editTicket }) {
     workDate:       editTicket["Service Date"] || today,
     wellLease:      editTicket["Well/Lease"]   || "",
     notes:          editTicket["Notes"]        || "",
-    fieldTicketImage: ""
+    fieldTicketImage: "",
+    startTime:      editTicket["Start Time"]   || "",
+    endTime:        editTicket["End Time"]     || "",
+    hourlyRate:     editTicket["Hourly Rate"]  || "",
   } : {
     client:"", fieldTicket:"", dispatch:"", unit:"",
-    driver:"", workDate: today, wellLease:"", notes:"", fieldTicketImage:""
+    driver:"", workDate: today, wellLease:"", notes:"", fieldTicketImage:"",
+    startTime:"", endTime:"", hourlyRate:"",
   });
 
   const [loads, setLoads] = useState([{
@@ -883,6 +887,54 @@ function SubmitTicket({ phone, onComplete, editTicket }) {
         <Label text="Notes / Description"/>
         <Textarea placeholder="Add job specifics…" value={form.notes}
           onChange={e=>update("notes",e.target.value)}/>
+
+        {/* ── TIME & HOURS ── */}
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap: 12, marginTop: 4 }}>
+          <div>
+            <Label text="Start Time"/>
+            <Input type="time" value={form.startTime} onChange={e=>update("startTime",e.target.value)}/>
+          </div>
+          <div>
+            <Label text="End Time"/>
+            <Input type="time" value={form.endTime} onChange={e=>update("endTime",e.target.value)}/>
+          </div>
+        </div>
+
+        <Label text="Hourly Rate ($)"/>
+        <Input
+          type="number"
+          placeholder="e.g. 85"
+          value={form.hourlyRate}
+          onChange={e=>update("hourlyRate",e.target.value)}
+        />
+
+        {/* Live total hours display */}
+        {form.startTime && form.endTime && (() => {
+          const [sh,sm] = form.startTime.split(":").map(Number);
+          const [eh,em] = form.endTime.split(":").map(Number);
+          let mins = (eh*60+em) - (sh*60+sm);
+          if (mins < 0) mins += 1440;
+          const hrs = (mins/60).toFixed(2);
+          const total = form.hourlyRate ? (parseFloat(hrs) * parseFloat(form.hourlyRate)).toFixed(2) : null;
+          return (
+            <div style={{
+              marginTop: 10, padding:"10px 14px", background: "rgba(212,175,55,0.08)",
+              border:"1px solid rgba(212,175,55,0.25)", borderRadius: 8,
+              display:"flex", justifyContent:"space-between", alignItems:"center"
+            }}>
+              <div>
+                <div style={{ color: T.muted, fontSize: 10 }}>TOTAL HOURS</div>
+                <div style={{ color: T.gold, fontFamily:"'Space Mono',monospace", fontWeight:700, fontSize:18 }}>{hrs} hrs</div>
+              </div>
+              {total && (
+                <div style={{ textAlign:"right" }}>
+                  <div style={{ color: T.muted, fontSize: 10 }}>HOURS TOTAL</div>
+                  <div style={{ color: T.success, fontFamily:"'Space Mono',monospace", fontWeight:700, fontSize:18 }}>${total}</div>
+                </div>
+              )}
+            </div>
+          );
+        })()}
       </div>
 
       {/* ── FIELD TICKET PHOTO ── */}
