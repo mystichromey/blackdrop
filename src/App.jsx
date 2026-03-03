@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useRef } from "react";
 
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
 const API_URL =
-  "https://script.google.com/macros/s/AKfycbwVpYsWq79H8prvTbn0d-xtZcKMzuIrBInM25IavIDgYfe2QEko4kpoYREYheN5svd6/exec";
+  "https://script.google.com/macros/s/AKfycbwumog0-0BpUkZBvj9LhcQe6dNMjUwqbqLgC-becDR2SjMUoNCG2ZKHZ7z-3Pdf0rROpQ/exec";
 
 // ─── DESIGN TOKENS ───────────────────────────────────────────────────────────
 const T = {
