@@ -1111,6 +1111,7 @@ const [captured,setCaptured]=React.useState(null);
 const [cropRect, setCropRect] = React.useState(null);
 const dragRef = React.useRef(null);
 const [ready,setReady] = React.useState(false);
+const [videoKey, setVideoKey] = React.useState(0);
 
 async function startCamera() {
   try {
@@ -1307,11 +1308,12 @@ return(
 <>
 <div style={{ position: "relative" }}>
   <video
-    ref={videoRef}
-    style={M.video}
-    playsInline
-    autoPlay
-  />
+  key={videoKey}
+  ref={videoRef}
+  style={M.video}
+  playsInline
+  autoPlay
+/>
 
   {/* Guide Box */}
   <div
@@ -1381,34 +1383,10 @@ onChange={handleFileUpload}
 <div style={{display:"flex",gap:10}}>
 <button
   style={M.secondaryBtn}
-  onClick={async () => {
+  onClick={() => {
     setCaptured(null);
     setCropRect(null);
-
-    const video = videoRef.current;
-
-    // If video lost its stream, restart it
-    if (!streamRef.current || !video?.srcObject) {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: { ideal: "environment" },
-            width: { ideal: 1920 },
-            height: { ideal: 1080 }
-          }
-        });
-
-        streamRef.current = stream;
-
-        if (video) {
-          video.srcObject = stream;
-          await video.play();
-        }
-
-      } catch (err) {
-        console.error("Retake camera restart error:", err);
-      }
-    }
+    setVideoKey(prev => prev + 1);
   }}
 >
 RETAKE
