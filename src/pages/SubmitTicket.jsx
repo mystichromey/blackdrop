@@ -1179,7 +1179,7 @@ React.useEffect(() => {
 
   return () => {
     active = false;
-    if (streamRef.current) {
+    if (!open && streamRef.current) {
       streamRef.current.getTracks().forEach(t => t.stop());
       streamRef.current = null;
     }
@@ -1381,9 +1381,34 @@ onChange={handleFileUpload}
 <div style={{display:"flex",gap:10}}>
 <button
   style={M.secondaryBtn}
-  onClick={() => {
+  onClick={async () => {
     setCaptured(null);
     setCropRect(null);
+
+    const video = videoRef.current;
+
+    // If video lost its stream, restart it
+    if (!streamRef.current || !video?.srcObject) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: "environment" },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 }
+          }
+        });
+
+        streamRef.current = stream;
+
+        if (video) {
+          video.srcObject = stream;
+          await video.play();
+        }
+
+      } catch (err) {
+        console.error("Retake camera restart error:", err);
+      }
+    }
   }}
 >
 RETAKE
