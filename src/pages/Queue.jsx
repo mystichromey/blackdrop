@@ -8,7 +8,7 @@ export default function Queue({ phone, onEdit, onBack }) {
   useEffect(() => {
     async function fetchTickets() {
       const res = await fetch(
-        `https://script.google.com/macros/s/AKfycbzws4Mt7KMVkLdc11IJNOtPyAWgZOP80cDiFffYZK1u_hJc4KQ-OEDtjo3_uZMGjV2v/exec?mode=queue&phone=${phone}`
+        `https://script.google.com/macros/library/d/1R0m6xUwaaBMAeeGGld7E3u79hpydt2xj1osdpZiW-0oDCkLIF76O8EqS/61/exec?mode=queue&phone=${phone}`
       ); // fetch also must match web app url
       const data = await res.json();
       setTickets(data.reverse());
