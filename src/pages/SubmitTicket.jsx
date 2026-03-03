@@ -1111,34 +1111,6 @@ const [captured,setCaptured]=React.useState(null);
 const [cropRect, setCropRect] = React.useState(null);
 const dragRef = React.useRef(null);
 const [ready,setReady] = React.useState(false);
-const [videoKey, setVideoKey] = React.useState(0);
-
-async function startCamera() {
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: { ideal: "environment" },
-        width: { ideal: 1920 },
-        height: { ideal: 1080 }
-      }
-    });
-
-    if (cancelled) return;
-
-    const video = videoRef.current;
-    if (!video) return;
-
-    streamRef.current = stream;
-    video.srcObject = stream;
-
-    video.onloadeddata = () => {
-      setReady(true);
-    };
-
-  } catch (err) {
-    console.error("Camera error:", err);
-  }
-}
 
 React.useEffect(() => {
   if (!open) return;
@@ -1157,12 +1129,12 @@ React.useEffect(() => {
 
       if (!active) return;
 
+      streamRef.current = stream;
+
       const video = videoRef.current;
       if (!video) return;
 
-      streamRef.current = stream;
       video.srcObject = stream;
-
       await video.play();
 
       setReady(true);
@@ -1172,18 +1144,19 @@ React.useEffect(() => {
     }
   }
 
-  setReady(false);
   setCaptured(null);
+  setReady(false);
 
-  // small delay ensures video is mounted
-  setTimeout(initCamera, 50);
+  initCamera();
 
   return () => {
     active = false;
-    if (!open && streamRef.current) {
+
+    if (streamRef.current) {
       streamRef.current.getTracks().forEach(t => t.stop());
       streamRef.current = null;
     }
+
     setReady(false);
   };
 
@@ -1308,7 +1281,6 @@ return(
 <>
 <div style={{ position: "relative" }}>
   <video
-  key={videoKey}
   ref={videoRef}
   style={M.video}
   playsInline
@@ -1386,7 +1358,12 @@ onChange={handleFileUpload}
   onClick={() => {
     setCaptured(null);
     setCropRect(null);
-    setVideoKey(prev => prev + 1);
+
+    const video = videoRef.current;
+    if (video && streamRef.current) {
+      video.srcObject = streamRef.current;
+      video.play().catch(() => {});
+    }
   }}
 >
 RETAKE
