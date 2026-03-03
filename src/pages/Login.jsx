@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 
 // WEB APP URL
-const API_URL = "https://script.google.com/macros/s/AKfycbzchLFGDTi7UpT0nHCaOCxIsTcutEYKt0IVTYisHuS6khmQ13dpY_3a9CnlJdut-H9M6g/exec";
+const API_URL = "https://script.google.com/macros/s/AKfycbwumog0-0BpUkZBvj9LhcQe6dNMjUwqbqLgC-becDR2SjMUoNCG2ZKHZ7z-3Pdf0rROpQ/exec";
 export default function Login({ onLogin }) {
 
   const [phone, setPhone] = useState("");
