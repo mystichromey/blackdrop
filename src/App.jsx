@@ -527,213 +527,375 @@ function TicketSuccess({ onBack }) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// DOCSCAN ENGINE — pure Canvas/JS image processing (no external libs)
-// Steps: Grayscale → Gaussian Blur → Sobel Edges → Corner Detection →
-//        Perspective Warp → Adaptive Threshold / Colour Enhance
+// DOCSCAN ENGINE
+// Chunked async so UI never freezes — each heavy step yields via setTimeout(0)
+// so the browser repaints the progress bar between steps.
 // ═══════════════════════════════════════════════════════════════════════════
 const DocScan = {
-  // Step 1 — Grayscale (ITU-R BT.601 weighted luminance)
-  toGrayscale(imageData) {
-    const { data, width, height } = imageData;
-    const gray = new Uint8ClampedArray(width * height);
-    for (let i = 0; i < gray.length; i++) {
-      gray[i] = Math.round(0.299*data[i*4] + 0.587*data[i*4+1] + 0.114*data[i*4+2]);
-    }
-    return gray;
+
+  // yield to browser so progress bar can repaint
+  yield() { return new Promise(r => setTimeout(r, 0)); },
+
+  // ── Step 1: Grayscale ──────────────────────────────────────────────────
+  toGray(data, len) {
+    const g = new Uint8ClampedArray(len);
+    for (let i = 0; i < len; i++)
+      g[i] = (77*data[i*4] + 150*data[i*4+1] + 29*data[i*4+2]) >> 8;
+    return g;
   },
 
-  // Step 2 — 5×5 Gaussian blur (σ≈1.0) — suppresses noise before edge detection
-  gaussianBlur(gray, width, height) {
-    const k = [2,4,5,4,2, 4,9,12,9,4, 5,12,15,12,5, 4,9,12,9,4, 2,4,5,4,2];
-    const out = new Uint8ClampedArray(width * height);
-    for (let y = 2; y < height-2; y++) {
-      for (let x = 2; x < width-2; x++) {
-        let sum = 0, ki = 0;
-        for (let ky = -2; ky <= 2; ky++)
-          for (let kx = -2; kx <= 2; kx++)
-            sum += gray[(y+ky)*width+(x+kx)] * k[ki++];
-        out[y*width+x] = Math.round(sum / 159);
+  // ── Step 2: Box blur (fast approximation of Gaussian, no freeze) ───────
+  boxBlur(gray, w, h, r=2) {
+    const out = new Uint8ClampedArray(gray.length);
+    // horizontal pass
+    for (let y = 0; y < h; y++) {
+      let sum = 0, cnt = 0;
+      for (let x = 0; x < r; x++) { sum += gray[y*w+x]; cnt++; }
+      for (let x = 0; x < w; x++) {
+        if (x+r < w)   { sum += gray[y*w+x+r]; cnt++; }
+        if (x-r-1 >= 0){ sum -= gray[y*w+x-r-1]; cnt--; }
+        out[y*w+x] = sum/cnt|0;
       }
     }
-    return out;
-  },
-
-  // Step 3 — Sobel edge detection + auto-threshold + dilation
-  detectEdges(blurred, width, height) {
-    const mag = new Float32Array(width * height);
-    let maxMag = 0;
-    for (let y = 1; y < height-1; y++) {
-      for (let x = 1; x < width-1; x++) {
-        const gx = -blurred[(y-1)*width+(x-1)] + blurred[(y-1)*width+(x+1)]
-                   -2*blurred[y*width+(x-1)]   + 2*blurred[y*width+(x+1)]
-                   -blurred[(y+1)*width+(x-1)] + blurred[(y+1)*width+(x+1)];
-        const gy = -blurred[(y-1)*width+(x-1)] - 2*blurred[(y-1)*width+x] - blurred[(y-1)*width+(x+1)]
-                   +blurred[(y+1)*width+(x-1)] + 2*blurred[(y+1)*width+x] + blurred[(y+1)*width+(x+1)];
-        mag[y*width+x] = Math.sqrt(gx*gx+gy*gy);
-        if (mag[y*width+x] > maxMag) maxMag = mag[y*width+x];
+    const out2 = new Uint8ClampedArray(out.length);
+    // vertical pass
+    for (let x = 0; x < w; x++) {
+      let sum = 0, cnt = 0;
+      for (let y = 0; y < r; y++) { sum += out[y*w+x]; cnt++; }
+      for (let y = 0; y < h; y++) {
+        if (y+r < h)    { sum += out[(y+r)*w+x]; cnt++; }
+        if (y-r-1 >= 0) { sum -= out[(y-r-1)*w+x]; cnt--; }
+        out2[y*w+x] = sum/cnt|0;
       }
     }
-    const thresh = maxMag * 0.20;
-    const edges  = new Uint8ClampedArray(width * height);
-    for (let i = 0; i < mag.length; i++) edges[i] = mag[i] > thresh ? 255 : 0;
-    // Dilate to close outline gaps
-    const d = new Uint8ClampedArray(width * height);
-    for (let y = 1; y < height-1; y++)
-      for (let x = 1; x < width-1; x++) {
-        const n = y*width+x;
-        if (edges[n]||edges[n-1]||edges[n+1]||edges[n-width]||edges[n+width]) d[n]=255;
-      }
-    return d;
+    return out2;
   },
 
-  // Step 3b — Find document corners (TL, TR, BR, BL) from edge map
-  findDocumentCorners(edges, width, height) {
-    let minX=width,maxX=0,minY=height,maxY=0,count=0;
-    for (let y=0;y<height;y++) for (let x=0;x<width;x++) {
-      if (edges[y*width+x]===255) {
-        if(x<minX)minX=x;if(x>maxX)maxX=x;if(y<minY)minY=y;if(y>maxY)maxY=y;count++;
-      }
+  // ── Step 3: Sobel edges ────────────────────────────────────────────────
+  sobel(blur, w, h) {
+    const mag = new Uint8ClampedArray(w*h);
+    let mx = 0;
+    const tmp = new Float32Array(w*h);
+    for (let y=1;y<h-1;y++) for (let x=1;x<w-1;x++) {
+      const gx = -blur[(y-1)*w+x-1] + blur[(y-1)*w+x+1]
+                 -2*blur[y*w+x-1]   + 2*blur[y*w+x+1]
+                 -blur[(y+1)*w+x-1] + blur[(y+1)*w+x+1];
+      const gy = -blur[(y-1)*w+x-1] - 2*blur[(y-1)*w+x] - blur[(y-1)*w+x+1]
+                 +blur[(y+1)*w+x-1] + 2*blur[(y+1)*w+x] + blur[(y+1)*w+x+1];
+      const m = Math.sqrt(gx*gx+gy*gy);
+      tmp[y*w+x] = m; if (m>mx) mx=m;
     }
-    if ((maxX-minX)*(maxY-minY) < width*height*0.15 || count<500) return null;
-    const mx=(minX+maxX)/2, my=(minY+maxY)/2;
-    function best(xs,ys,score){let b=null,bs=-Infinity;for(const y of ys)for(const x of xs){if(edges[y*width+x]===255){const s=score(x,y);if(s>bs){bs=s;b=[x,y];}}}return b||[xs[0],ys[0]];}
-    const yt=[...Array(Math.floor(my)).keys()], yb=[...Array(height-Math.ceil(my)).keys()].map(i=>Math.ceil(my)+i);
-    const xl=[...Array(Math.floor(mx)).keys()], xr=[...Array(width-Math.ceil(mx)).keys()].map(i=>Math.ceil(mx)+i);
-    return [best(xl,yt,(x,y)=>-(x+y)),best(xr,yt,(x,y)=>x-y),best(xr,yb,(x,y)=>x+y),best(xl,yb,(x,y)=>-x+y)];
+    const th = mx*0.18;
+    for (let i=0;i<tmp.length;i++) mag[i] = tmp[i]>th?255:0;
+    return mag;
   },
 
-  // Step 4 — Perspective warp via homography (bilinear interpolation)
-  perspectiveWarp(srcData, srcW, srcH, corners) {
+  // ── Step 3b: Find 4 document corners ──────────────────────────────────
+  findCorners(edges, w, h) {
+    // Sample a grid of edge pixels — full scan is too slow on mobile
+    const pts = [];
+    const step = Math.max(1, Math.floor(Math.sqrt(w*h/4000)));
+    for (let y=0;y<h;y+=step) for (let x=0;x<w;x+=step)
+      if (edges[y*w+x]===255) pts.push([x,y]);
+    if (pts.length < 20) return null;
+
+    const area = (p,q,r) => Math.abs((q[0]-p[0])*(r[1]-p[1])-(r[0]-p[0])*(q[1]-p[1]));
+    // Find 4 extreme corners by maximising Manhattan distance from each corner
+    const mx=(w-1), my=(h-1);
+    const score = [
+      (x,y)=>-(x+y),   // TL
+      (x,y)=> x-y,     // TR
+      (x,y)=> x+y,     // BR
+      (x,y)=>-(x-y),   // BL (= y-x)
+    ];
+    const corners = score.map(fn => {
+      let best=null, bs=-Infinity;
+      for (const [x,y] of pts) { const s=fn(x,y); if(s>bs){bs=s;best=[x,y];} }
+      return best;
+    });
+    if (corners.some(c=>!c)) return null;
+    // Reject if the quadrilateral is too small (< 12% of image)
     const [tl,tr,br,bl] = corners;
-    const outW = Math.round(Math.max(Math.hypot(tr[0]-tl[0],tr[1]-tl[1]),Math.hypot(br[0]-bl[0],br[1]-bl[1])));
-    const outH = Math.round(Math.max(Math.hypot(bl[0]-tl[0],bl[1]-tl[1]),Math.hypot(br[0]-tr[0],br[1]-tr[1])));
-    if (outW<10||outH<10) return null;
-    const src=[tl[0],tl[1],tr[0],tr[1],br[0],br[1],bl[0],bl[1]];
-    const dst=[0,0,outW-1,0,outW-1,outH-1,0,outH-1];
+    const quad = area(tl,tr,br)+area(tl,br,bl);
+    if (quad < w*h*0.12) return null;
+    return corners; // [TL,TR,BR,BL]
+  },
+
+  // ── Step 4: Perspective warp ───────────────────────────────────────────
+  warp(srcPx, sw, sh, corners, upscale=1.5) {
+    const [tl,tr,br,bl] = corners;
+    const d = (a,b)=>Math.hypot(b[0]-a[0],b[1]-a[1]);
+    const ow = Math.round(Math.max(d(tl,tr),d(bl,br)) * upscale);
+    const oh = Math.round(Math.max(d(tl,bl),d(tr,br)) * upscale);
+    if (ow<20||oh<20) return null;
+
+    // Build homography src→dst
+    const srcP=[tl[0],tl[1],tr[0],tr[1],br[0],br[1],bl[0],bl[1]];
+    const dstP=[0,0,ow-1,0,ow-1,oh-1,0,oh-1];
     const A=[];
-    for(let i=0;i<4;i++){const[sx,sy]=[src[i*2],src[i*2+1]],[dx,dy]=[dst[i*2],dst[i*2+1]];A.push([-dx,-dy,-1,0,0,0,sx*dx,sx*dy,sx]);A.push([0,0,0,-dx,-dy,-1,sy*dx,sy*dy,sy]);}
+    for(let i=0;i<4;i++){
+      const[sx,sy]=[srcP[i*2],srcP[i*2+1]],[dx,dy]=[dstP[i*2],dstP[i*2+1]];
+      A.push([-dx,-dy,-1,0,0,0,sx*dx,sx*dy,sx]);
+      A.push([0,0,0,-dx,-dy,-1,sy*dx,sy*dy,sy]);
+    }
     const h=this._solveH(A); if(!h) return null;
-    const out=new Uint8ClampedArray(outW*outH*4);
-    for(let dy=0;dy<outH;dy++) for(let dx=0;dx<outW;dx++){
-      const w=h[6]*dx+h[7]*dy+h[8], sx=(h[0]*dx+h[1]*dy+h[2])/w, sy=(h[3]*dx+h[4]*dy+h[5])/w;
-      const x0=Math.floor(sx),y0=Math.floor(sy),x1=x0+1,y1=y0+1,fx=sx-x0,fy=sy-y0;
-      if(x0<0||y0<0||x1>=srcW||y1>=srcH) continue;
-      const i00=(y0*srcW+x0)*4,i10=(y0*srcW+x1)*4,i01=(y1*srcW+x0)*4,i11=(y1*srcW+x1)*4,oi=(dy*outW+dx)*4;
-      for(let c=0;c<3;c++) out[oi+c]=Math.round(srcData[i00+c]*(1-fx)*(1-fy)+srcData[i10+c]*fx*(1-fy)+srcData[i01+c]*(1-fx)*fy+srcData[i11+c]*fx*fy);
+    const out=new Uint8ClampedArray(ow*oh*4);
+    for(let dy=0;dy<oh;dy++) for(let dx=0;dx<ow;dx++){
+      const ww=h[6]*dx+h[7]*dy+h[8];
+      const sx=(h[0]*dx+h[1]*dy+h[2])/ww;
+      const sy=(h[3]*dx+h[4]*dy+h[5])/ww;
+      const x0=sx|0,y0=sy|0,x1=x0+1,y1=y0+1;
+      if(x0<0||y0<0||x1>=sw||y1>=sh) continue;
+      const fx=sx-x0,fy=sy-y0;
+      const i00=(y0*sw+x0)*4,i10=(y0*sw+x1)*4,i01=(y1*sw+x0)*4,i11=(y1*sw+x1)*4;
+      const oi=(dy*ow+dx)*4;
+      for(let c=0;c<3;c++)
+        out[oi+c]=( srcPx[i00+c]*(1-fx)*(1-fy)+srcPx[i10+c]*fx*(1-fy)
+                   +srcPx[i01+c]*(1-fx)*fy    +srcPx[i11+c]*fx*fy )+0.5|0;
       out[oi+3]=255;
     }
-    return {data:out,width:outW,height:outH};
+    return {data:out,w:ow,h:oh};
   },
 
   _solveH(A) {
-    const n=8, M=A.map(r=>[...r]);
+    const n=8,M=A.map(r=>[...r]);
     for(let col=0;col<n;col++){
       let p=-1,best=0;
       for(let row=col;row<n*2;row++) if(Math.abs(M[row][col])>best){best=Math.abs(M[row][col]);p=row;}
       if(p<0||best<1e-10) return null;
       [M[col],M[p]]=[M[p],M[col]];
-      const d=M[col][col]; M[col]=M[col].map(v=>v/d);
-      for(let row=0;row<n*2;row++){if(row===col) continue; const f=M[row][col]; M[row]=M[row].map((v,j)=>v-f*M[col][j]);}
+      const dv=M[col][col]; M[col]=M[col].map(v=>v/dv);
+      for(let row=0;row<n*2;row++){if(row===col)continue;const f=M[row][col];M[row]=M[row].map((v,j)=>v-f*M[col][j]);}
     }
     return M.slice(0,8).map(r=>r[8]).concat([1]);
   },
 
-  // Step 5a — Adaptive threshold (B&W scan look, handles shadows perfectly)
-  // Uses integral image for O(1) local mean queries — fast even on mobile
-  adaptiveThreshold(imageData) {
-    const {data,width,height} = imageData;
-    const gray = this.toGrayscale(imageData);
-    const out  = new ImageData(width, height);
-    const HALF=10, C=10;
-    const integral = new Float64Array((width+1)*(height+1));
-    for(let y=0;y<height;y++) for(let x=0;x<width;x++)
-      integral[(y+1)*(width+1)+(x+1)] = gray[y*width+x]+integral[y*(width+1)+(x+1)]+integral[(y+1)*(width+1)+x]-integral[y*(width+1)+x];
-    for(let y=0;y<height;y++) for(let x=0;x<width;x++){
-      const x1=Math.max(0,x-HALF),y1=Math.max(0,y-HALF),x2=Math.min(width-1,x+HALF),y2=Math.min(height-1,y+HALF);
-      const area=(x2-x1+1)*(y2-y1+1);
-      const sum=integral[(y2+1)*(width+1)+(x2+1)]-integral[y1*(width+1)+(x2+1)]-integral[(y2+1)*(width+1)+x1]+integral[y1*(width+1)+x1];
-      const val=gray[y*width+x]<(sum/area)-C?0:255;
-      const i=(y*width+x)*4; out.data[i]=out.data[i+1]=out.data[i+2]=val; out.data[i+3]=255;
+  // ── Step 5: Enhancement modes ──────────────────────────────────────────
+
+  // Adaptive B&W — handles shadows, uneven lighting (integral image O(1))
+  adaptive(imgData, C=8) {
+    const {data,width:w,height:h}=imgData;
+    const gray=this.toGray(data,w*h);
+    const HALF=12;
+    const intg=new Float64Array((w+1)*(h+1));
+    for(let y=0;y<h;y++) for(let x=0;x<w;x++)
+      intg[(y+1)*(w+1)+(x+1)]=gray[y*w+x]+intg[y*(w+1)+(x+1)]+intg[(y+1)*(w+1)+x]-intg[y*(w+1)+x];
+    const out=new ImageData(w,h);
+    for(let y=0;y<h;y++) for(let x=0;x<w;x++){
+      const x1=Math.max(0,x-HALF),y1=Math.max(0,y-HALF);
+      const x2=Math.min(w-1,x+HALF),y2=Math.min(h-1,y+HALF);
+      const s=intg[(y2+1)*(w+1)+(x2+1)]-intg[y1*(w+1)+(x2+1)]-intg[(y2+1)*(w+1)+x1]+intg[y1*(w+1)+x1];
+      const mean=s/((x2-x1+1)*(y2-y1+1));
+      const v=gray[y*w+x]<mean-C?0:255;
+      const i=(y*w+x)*4;out.data[i]=out.data[i+1]=out.data[i+2]=v;out.data[i+3]=255;
     }
     return out;
   },
 
-  // Step 5b — Colour enhance: tile-based CLAHE in luminance only
-  colorEnhance(imageData) {
-    const {data,width,height} = imageData;
-    const out = new ImageData(new Uint8ClampedArray(data), width, height);
-    const TILE=64;
-    for(let ty=0;ty<height;ty+=TILE) for(let tx=0;tx<width;tx+=TILE){
-      const tw=Math.min(TILE,width-tx), th=Math.min(TILE,height-ty);
-      let lo=255,hi=0;
-      for(let y=ty;y<ty+th;y++) for(let x=tx;x<tx+tw;x++){
-        const i=(y*width+x)*4, lum=0.299*data[i]+0.587*data[i+1]+0.114*data[i+2];
-        if(lum<lo)lo=lum;if(lum>hi)hi=lum;
-      }
-      if(hi-lo<5) continue;
-      const sc=255/(hi-lo);
-      for(let y=ty;y<ty+th;y++) for(let x=tx;x<tx+tw;x++){
-        const i=(y*width+x)*4;
-        out.data[i]  =Math.min(255,Math.round((data[i]  -lo)*sc));
-        out.data[i+1]=Math.min(255,Math.round((data[i+1]-lo)*sc));
-        out.data[i+2]=Math.min(255,Math.round((data[i+2]-lo)*sc));
-      }
+  // High-contrast B&W — aggressive threshold + sharpening pass
+  highContrast(imgData) {
+    const {data,width:w,height:h}=imgData;
+    const gray=this.toGray(data,w*h);
+    // Otsu threshold
+    const hist=new Int32Array(256);
+    for(let i=0;i<gray.length;i++) hist[gray[i]]++;
+    const N=gray.length;
+    let sum=0; for(let i=0;i<256;i++) sum+=i*hist[i];
+    let sumB=0,wB=0,best=0,th=128;
+    for(let t=0;t<256;t++){
+      wB+=hist[t]; if(!wB) continue;
+      const wF=N-wB; if(!wF) break;
+      sumB+=t*hist[t];
+      const mB=sumB/wB, mF=(sum-sumB)/wF;
+      const v=wB*wF*(mB-mF)*(mB-mF);
+      if(v>best){best=v;th=t;}
+    }
+    // Apply with sharpening unsharp mask
+    const sharp=new Uint8ClampedArray(gray.length);
+    for(let y=1;y<h-1;y++) for(let x=1;x<w-1;x++){
+      const lap = 5*gray[y*w+x]-gray[(y-1)*w+x]-gray[(y+1)*w+x]-gray[y*w+x-1]-gray[y*w+x+1];
+      sharp[y*w+x]=Math.max(0,Math.min(255,lap));
+    }
+    const out=new ImageData(w,h);
+    for(let y=0;y<h;y++) for(let x=0;x<w;x++){
+      const v=sharp[y*w+x]<th?0:255;
+      const i=(y*w+x)*4;out.data[i]=out.data[i+1]=out.data[i+2]=v;out.data[i+3]=255;
     }
     return out;
   },
 
-  // Master pipeline — returns { dataURL, contourFound }
-  async process(dataURL, mode="adaptive", onProgress=()=>{}) {
-    return new Promise(resolve => {
-      const img = new Image();
-      img.onload = () => {
-        const MAX=1400;
-        let w=img.width, h=img.height;
-        if(Math.max(w,h)>MAX){const s=MAX/Math.max(w,h);w=Math.round(w*s);h=Math.round(h*s);}
-        const c=document.createElement("canvas"); c.width=w; c.height=h;
-        const ctx=c.getContext("2d"); ctx.drawImage(img,0,0,w,h);
-        const imgData=ctx.getImageData(0,0,w,h);
-        onProgress(15,"Grayscale + blur…");
-        const gray=this.toGrayscale(imgData), blurred=this.gaussianBlur(gray,w,h);
-        onProgress(35,"Edge detection…");
-        const edges=this.detectEdges(blurred,w,h), corners=this.findDocumentCorners(edges,w,h);
-        onProgress(55,"Perspective correction…");
-        let warpedData=null, contourFound=false;
-        if(corners){warpedData=this.perspectiveWarp(imgData.data,w,h,corners);if(warpedData)contourFound=true;}
-        onProgress(75,"Enhancing…");
-        let finalData;
-        if(warpedData){
-          const wi=new ImageData(warpedData.data,warpedData.width,warpedData.height);
-          finalData=mode==="color"?this.colorEnhance(wi):this.adaptiveThreshold(wi);
-        } else {
-          finalData=mode==="color"?this.colorEnhance(imgData):this.adaptiveThreshold(imgData);
-        }
-        onProgress(95,"Finishing…");
-        const oc=document.createElement("canvas"); oc.width=finalData.width; oc.height=finalData.height;
-        oc.getContext("2d").putImageData(finalData,0,0);
-        resolve({dataURL:oc.toDataURL("image/jpeg",0.92), contourFound});
-      };
-      img.onerror=()=>resolve(null);
-      img.src=dataURL;
+  // Magic colour — preserve hue, stretch contrast per-channel
+  colorEnhance(imgData) {
+    const {data,width:w,height:h}=imgData;
+    const out=new ImageData(new Uint8ClampedArray(data),w,h);
+    // Global percentile stretch per channel
+    for(let c=0;c<3;c++){
+      const vals=[];
+      for(let i=0;i<w*h;i++) vals.push(data[i*4+c]);
+      vals.sort((a,b)=>a-b);
+      const lo=vals[Math.floor(vals.length*0.02)];
+      const hi=vals[Math.floor(vals.length*0.98)];
+      const rng=hi-lo||1;
+      for(let i=0;i<w*h;i++)
+        out.data[i*4+c]=Math.max(0,Math.min(255,((data[i*4+c]-lo)/rng*255)+0.5|0));
+    }
+    return out;
+  },
+
+  // ── Master pipeline: chunked, non-blocking ─────────────────────────────
+  async process(dataURL, mode, onProgress, manualCorners=null) {
+    onProgress(5,"Loading image…");
+    await this.yield();
+
+    // Load image onto canvas
+    const img = await new Promise((res,rej)=>{
+      const i=new Image(); i.onload=()=>res(i); i.onerror=rej; i.src=dataURL;
     });
+
+    // Work at max 1000px (fast) then upscale output to 2000px
+    const WORK=1000, OUT=2000;
+    const sc = Math.min(1, WORK/Math.max(img.width,img.height));
+    const ww = Math.round(img.width*sc), wh = Math.round(img.height*sc);
+    const wc=document.createElement("canvas"); wc.width=ww; wc.height=wh;
+    wc.getContext("2d").drawImage(img,0,0,ww,wh);
+    const imgData=wc.getContext("2d").getImageData(0,0,ww,wh);
+
+    onProgress(18,"Analysing edges…"); await this.yield();
+    const gray=this.toGray(imgData.data,ww*wh);
+    const blur=this.boxBlur(gray,ww,wh,2);
+
+    onProgress(32,"Finding document…"); await this.yield();
+    const edges=this.sobel(blur,ww,wh);
+
+    onProgress(46,"Correcting perspective…"); await this.yield();
+    // Use manual corners if provided (already in work-canvas coords)
+    let corners = manualCorners
+      ? manualCorners.map(([x,y])=>[Math.round(x*sc),Math.round(y*sc)])
+      : this.findCorners(edges,ww,wh);
+
+    let warped=null, found=false;
+    if(corners){
+      // upscale factor so output is ~2000px wide
+      const baseW=Math.max(
+        Math.hypot(corners[1][0]-corners[0][0],corners[1][1]-corners[0][1]),
+        Math.hypot(corners[2][0]-corners[3][0],corners[2][1]-corners[3][1])
+      );
+      const upscale = Math.max(1, OUT/baseW);
+      warped=this.warp(imgData.data,ww,wh,corners,upscale);
+      if(warped) found=true;
+    }
+
+    onProgress(65,"Enhancing…"); await this.yield();
+
+    let srcData;
+    if(warped){
+      srcData=new ImageData(warped.data,warped.w,warped.h);
+    } else {
+      // No document found — still upscale original
+      const uc=document.createElement("canvas");
+      const us=Math.min(2,OUT/Math.max(img.width,img.height));
+      uc.width=Math.round(img.width*us); uc.height=Math.round(img.height*us);
+      uc.getContext("2d").drawImage(img,0,0,uc.width,uc.height);
+      srcData=uc.getContext("2d").getImageData(0,0,uc.width,uc.height);
+    }
+
+    onProgress(80,"Applying filter…"); await this.yield();
+
+    let finalData;
+    switch(mode){
+      case "highContrast": finalData=this.highContrast(srcData); break;
+      case "color":        finalData=this.colorEnhance(srcData); break;
+      case "original":     finalData=srcData;                    break;
+      default:             finalData=this.adaptive(srcData);     break;
+    }
+
+    onProgress(95,"Rendering…"); await this.yield();
+
+    const oc=document.createElement("canvas");
+    oc.width=finalData.width; oc.height=finalData.height;
+    oc.getContext("2d").putImageData(finalData,0,0);
+
+    return { dataURL:oc.toDataURL("image/jpeg",0.93), found };
   }
 };
 
-// ─── SCANNER MODAL (DocScan-powered) ─────────────────────────────────────────
+// ─── MANUAL CROP OVERLAY ──────────────────────────────────────────────────────
+// Shows 4 draggable corner handles over the preview image so user can
+// manually adjust the document boundary before scanning.
+function CropOverlay({ imgW, imgH, corners, onChange }) {
+  const svgRef = useRef(null);
+  const dragging = useRef(null);
+
+  function ptToSvg(e) {
+    const r = svgRef.current.getBoundingClientRect();
+    const cx = e.touches ? e.touches[0].clientX : e.clientX;
+    const cy = e.touches ? e.touches[0].clientY : e.clientY;
+    return [
+      Math.max(0,Math.min(imgW, (cx-r.left)*(imgW/r.width))),
+      Math.max(0,Math.min(imgH, (cy-r.top)*(imgH/r.height)))
+    ];
+  }
+
+  function startDrag(i,e) {
+    e.preventDefault(); e.stopPropagation();
+    dragging.current=i;
+  }
+  function onMove(e) {
+    if(dragging.current===null) return;
+    e.preventDefault();
+    const [x,y]=ptToSvg(e);
+    const next=[...corners]; next[dragging.current]=[x,y];
+    onChange(next);
+  }
+  function endDrag() { dragging.current=null; }
+
+  const [tl,tr,br,bl]=corners;
+  const poly=`${tl[0]},${tl[1]} ${tr[0]},${tr[1]} ${br[0]},${br[1]} ${bl[0]},${bl[1]}`;
+
+  return (
+    <svg ref={svgRef} viewBox={`0 0 ${imgW} ${imgH}`}
+      style={{position:"absolute",inset:0,width:"100%",height:"100%",overflow:"visible",touchAction:"none",cursor:"crosshair"}}
+      onMouseMove={onMove} onMouseUp={endDrag} onMouseLeave={endDrag}
+      onTouchMove={onMove} onTouchEnd={endDrag}>
+      <polygon points={poly} fill="rgba(212,175,55,0.08)" stroke="#D4AF37" strokeWidth="2" strokeDasharray="6 3"/>
+      {corners.map(([cx,cy],i)=>(
+        <g key={i} onMouseDown={e=>startDrag(i,e)} onTouchStart={e=>startDrag(i,e)}
+          style={{cursor:"grab"}}>
+          <circle cx={cx} cy={cy} r={imgW*0.04} fill="rgba(0,0,0,0.01)" stroke="none"/>
+          <circle cx={cx} cy={cy} r={imgW*0.025}
+            fill={dragging.current===i?"#D4AF37":"#000"}
+            stroke="#D4AF37" strokeWidth="2.5"/>
+          <text x={cx} y={cy+1} textAnchor="middle" dominantBaseline="middle"
+            fill="#D4AF37" fontSize={imgW*0.03} fontWeight="700" style={{pointerEvents:"none"}}>
+            {["⌜","⌝","⌟","⌞"][i]}
+          </text>
+        </g>
+      ))}
+    </svg>
+  );
+}
+
+// ─── SCANNER MODAL ────────────────────────────────────────────────────────────
 function ScannerModal({ open, onClose, onUse }) {
-  const [stage,     setStage]     = useState("idle"); // idle|preview|processing|done
-  const [original,  setOriginal]  = useState(null);
-  const [result,    setResult]    = useState(null);
+  // stage: idle | preview | crop | processing | done
+  const [stage,     setStage]     = useState("idle");
+  const [original,  setOriginal]  = useState(null);   // raw dataURL
+  const [imgSize,   setImgSize]   = useState([1,1]);  // natural dimensions
+  const [result,    setResult]    = useState(null);   // processed dataURL
   const [progress,  setProgress]  = useState(0);
   const [progLabel, setProgLabel] = useState("");
   const [scanMode,  setScanMode]  = useState("adaptive");
   const [found,     setFound]     = useState(false);
+  const [cropCorners, setCropCorners] = useState(null); // [[x,y]×4] in image coords
   const fileRef   = useRef(null);
   const scrollRef = useRef(0);
+  const imgRef    = useRef(null);
 
+  // iOS scroll lock
   useEffect(() => {
     if (open) {
-      setStage("idle"); setOriginal(null); setResult(null); setProgress(0);
+      setStage("idle"); setOriginal(null); setResult(null);
+      setProgress(0); setCropCorners(null);
       scrollRef.current = window.scrollY;
       document.documentElement.style.setProperty("--bd-scroll-y", `-${scrollRef.current}px`);
       document.body.classList.add("bd-locked");
@@ -750,183 +912,295 @@ function ScannerModal({ open, onClose, onUse }) {
 
   function handleFile(e) {
     const f = e.target.files?.[0]; if (!f) return;
-    setStage("preview"); setResult(null);
+    setStage("preview"); setResult(null); setCropCorners(null);
     const r = new FileReader();
-    r.onload = ev => setOriginal(ev.target.result);
+    r.onload = ev => {
+      const src = ev.target.result;
+      const img = new Image();
+      img.onload = () => {
+        setImgSize([img.width, img.height]);
+        setOriginal(src);
+      };
+      img.src = src;
+    };
     r.readAsDataURL(f);
     e.target.value = "";
+  }
+
+  // Default crop corners = full image rectangle
+  function initCrop() {
+    const [w,h] = imgSize;
+    const pad = Math.min(w,h)*0.05;
+    setCropCorners([[pad,pad],[w-pad,pad],[w-pad,h-pad],[pad,h-pad]]);
+    setStage("crop");
   }
 
   async function handleScan() {
     if (!original) return;
     setStage("processing"); setProgress(5); setProgLabel("Starting…");
-    const res = await DocScan.process(original, scanMode, (pct, lbl) => {
-      setProgress(pct); setProgLabel(lbl);
-    });
-    if (res) { setResult(res.dataURL); setFound(res.contourFound); setStage("done"); }
-    else     { setStage("preview"); }
+    try {
+      const res = await DocScan.process(
+        original, scanMode,
+        (pct, lbl) => { setProgress(pct); setProgLabel(lbl); },
+        cropCorners  // null = auto-detect
+      );
+      if (res) { setResult(res.dataURL); setFound(res.found); setStage("done"); }
+      else     { setStage("preview"); }
+    } catch(err) {
+      console.error("DocScan error:", err);
+      setStage("preview");
+    }
   }
 
   function handleUse()    { if (result) { onUse(result); onClose(); } }
-  function handleRetake() { setStage("idle"); setOriginal(null); setResult(null); }
+  function handleRetake() { setStage("idle"); setOriginal(null); setResult(null); setCropCorners(null); }
 
-  const displaySrc = stage === "done" ? result : original;
+  const MODES = [
+    { id:"adaptive",     icon:"🔳", label:"AUTO B&W",      sub:"Shadow-proof" },
+    { id:"highContrast", icon:"⬛", label:"HIGH CONTRAST",  sub:"Maximum clarity" },
+    { id:"color",        icon:"🌈", label:"COLOUR",         sub:"Keep colours" },
+    { id:"original",     icon:"📷", label:"ORIGINAL",       sub:"No filter" },
+  ];
+
+  const displaySrc = stage==="done" ? result : original;
 
   return (
-    <div className="bd-scanner" data-open={open ? "true" : "false"}>
+    <div className="bd-scanner" data-open={open?"true":"false"}>
 
-      {/* Header */}
+      {/* ── Header ── */}
       <div style={{
         display:"flex", alignItems:"center", justifyContent:"space-between",
         paddingTop:"max(14px, env(safe-area-inset-top, 14px))",
-        paddingBottom:12, paddingLeft:14, paddingRight:14,
+        paddingBottom:10, paddingLeft:12, paddingRight:12,
         background:T.card, borderBottom:`1px solid ${T.border}`, flexShrink:0,
       }}>
         <button onClick={onClose} style={{
-          width:44, height:44, borderRadius:10, background:T.surface,
+          width:40, height:40, borderRadius:9, background:T.surface,
           border:`1px solid ${T.border}`, color:T.text, cursor:"pointer",
-          fontSize:18, display:"flex", alignItems:"center", justifyContent:"center",
+          fontSize:17, display:"flex", alignItems:"center", justifyContent:"center",
           WebkitTapHighlightColor:"transparent", flexShrink:0,
         }}>✕</button>
+
         <div style={{ textAlign:"center" }}>
-          <div style={{ color:T.gold, fontSize:13, fontWeight:700, letterSpacing:"0.12em" }}>
-            {stage==="done" ? "✅ SCAN COMPLETE" : "📷 SCAN DOCUMENT"}
+          <div style={{ color:T.gold, fontSize:12, fontWeight:700, letterSpacing:"0.12em" }}>
+            { stage==="crop"       ? "✂ ADJUST CROP"
+            : stage==="done"       ? "✅ SCAN COMPLETE"
+            : stage==="processing" ? "⚙ PROCESSING"
+            :                        "📷 SCAN DOCUMENT" }
           </div>
           {stage==="done" && (
-            <div style={{ color:found?T.success:T.warn, fontSize:10, marginTop:2 }}>
-              {found ? "Document detected & corrected" : "No border found · full frame used"}
+            <div style={{ color:found?T.success:T.warn, fontSize:10, marginTop:1 }}>
+              {found?"Document auto-detected":"No border · full image used"}
+            </div>
+          )}
+          {stage==="crop" && (
+            <div style={{ color:T.muted, fontSize:10, marginTop:1 }}>
+              Drag corners to adjust
             </div>
           )}
         </div>
-        <div style={{ width:44, flexShrink:0 }}/>
+
+        {/* Right slot: crop button or spacer */}
+        {(stage==="preview"||stage==="done") ? (
+          <button onClick={stage==="done"?()=>{setStage("preview");setResult(null);}:initCrop} style={{
+            height:40, padding:"0 10px", borderRadius:9, background:T.surface,
+            border:`1px solid ${T.border}`, color:T.gold, cursor:"pointer",
+            fontSize:11, fontWeight:700, letterSpacing:"0.06em",
+            WebkitTapHighlightColor:"transparent", flexShrink:0,
+          }}>
+            {stage==="done"?"✎ REDO":"✂ CROP"}
+          </button>
+        ) : (
+          <div style={{ width:40, flexShrink:0 }}/>
+        )}
       </div>
 
-      {/* Preview area */}
+      {/* ── Preview / Crop / Result area — FILLS ALL REMAINING SPACE ── */}
       <div style={{
-        flex:1, display:"flex", flexDirection:"column",
-        alignItems:"center", justifyContent:"center",
-        background:"#060606", padding:12, overflow:"hidden", minHeight:0, position:"relative",
+        flex:1, minHeight:0, position:"relative",
+        background:"#050506", overflow:"hidden",
+        display:"flex", alignItems:"center", justifyContent:"center",
       }}>
-        {stage === "idle" && (
+
+        {/* ── IDLE: tap to choose ── */}
+        {stage==="idle" && (
           <div onClick={()=>fileRef.current?.click()}
-            style={{ textAlign:"center", color:T.muted, cursor:"pointer", padding:16 }}>
-            <div style={{ fontSize:52, lineHeight:1, marginBottom:14 }}>📄</div>
-            <div style={{ fontSize:14, marginBottom:6 }}>Tap to photograph a document</div>
-            <div style={{ fontSize:12, marginBottom:20, opacity:0.7 }}>Field ticket, load ticket, or any doc</div>
+            style={{ textAlign:"center", color:T.muted, cursor:"pointer", padding:24,
+              display:"flex", flexDirection:"column", alignItems:"center" }}>
+            <div style={{ fontSize:60, lineHeight:1, marginBottom:16 }}>📄</div>
+            <div style={{ fontSize:15, marginBottom:6, color:T.text, fontWeight:600 }}>
+              Tap to photograph a document
+            </div>
+            <div style={{ fontSize:12, marginBottom:24, opacity:0.6 }}>
+              Field ticket · Load ticket · Any paper doc
+            </div>
             <div style={{
-              display:"inline-flex", alignItems:"center", gap:8, padding:"12px 22px",
-              background:`rgba(212,175,55,0.12)`, border:`1px solid ${T.goldDim}`,
-              borderRadius:10, color:T.gold, fontWeight:700, fontSize:13, letterSpacing:"0.08em"
+              display:"inline-flex", alignItems:"center", gap:8,
+              padding:"14px 28px", background:`rgba(212,175,55,0.12)`,
+              border:`1px solid ${T.goldDim}`, borderRadius:12,
+              color:T.gold, fontWeight:700, fontSize:14, letterSpacing:"0.08em"
             }}>📁 Choose / Take Photo</div>
           </div>
         )}
 
-        {(stage==="preview"||stage==="done") && displaySrc && (
-          <img src={displaySrc} alt="Preview" style={{
-            maxWidth:"100%", maxHeight:"100%", objectFit:"contain",
-            borderRadius:6, boxShadow:"0 0 0 1px rgba(212,175,55,0.2)"
-          }}/>
+        {/* ── PREVIEW: image + optional crop overlay ── */}
+        {(stage==="preview"||stage==="crop") && original && (
+          <div style={{ position:"relative", width:"100%", height:"100%",
+            display:"flex", alignItems:"center", justifyContent:"center" }}>
+            <img ref={imgRef} src={original} alt="preview"
+              style={{ maxWidth:"100%", maxHeight:"100%", objectFit:"contain",
+                display:"block", borderRadius:4 }}/>
+            {stage==="crop" && cropCorners && imgRef.current && (() => {
+              const el = imgRef.current;
+              const nr = el.getBoundingClientRect();
+              const pr = el.parentElement.getBoundingClientRect();
+              // rendered image box relative to parent
+              const rw = el.naturalWidth, rh = el.naturalHeight;
+              const sc = Math.min(nr.width/rw, nr.height/rh);
+              const dispW = rw*sc, dispH = rh*sc;
+              const offX = (nr.width-dispW)/2;
+              const offY = (nr.height-dispH)/2;
+              return (
+                <div style={{
+                  position:"absolute",
+                  left: nr.left-pr.left+offX, top: nr.top-pr.top+offY,
+                  width:dispW, height:dispH,
+                }}>
+                  <CropOverlay
+                    imgW={rw} imgH={rh}
+                    corners={cropCorners}
+                    onChange={setCropCorners}
+                  />
+                </div>
+              );
+            })()}
+          </div>
         )}
 
-        {stage === "processing" && (
+        {/* ── PROCESSING overlay ── */}
+        {stage==="processing" && (
           <div style={{
-            position:"absolute", inset:0, background:"rgba(0,0,0,0.85)",
-            display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:16,
+            position:"absolute", inset:0,
+            background:"rgba(5,5,6,0.92)",
+            display:"flex", flexDirection:"column",
+            alignItems:"center", justifyContent:"center", gap:18,
           }}>
             {original && <img src={original} alt="" style={{
               position:"absolute", inset:0, width:"100%", height:"100%",
-              objectFit:"contain", opacity:0.12, filter:"blur(3px)"
+              objectFit:"contain", opacity:0.08, filter:"blur(4px)"
             }}/>}
-            <div style={{ position:"relative" }}><Spinner size={40} color={T.gold}/></div>
+            <div style={{ position:"relative" }}>
+              <Spinner size={44} color={T.gold}/>
+            </div>
             <div style={{ position:"relative", textAlign:"center" }}>
-              <div style={{ color:T.gold, fontWeight:700, fontSize:14,
-                letterSpacing:"0.1em", marginBottom:8 }}>PROCESSING</div>
-              <div style={{ color:T.muted, fontSize:12, marginBottom:14 }}>{progLabel}</div>
-              <div style={{ width:180, height:3, background:"rgba(255,255,255,0.1)", borderRadius:99 }}>
-                <div style={{ height:"100%", background:T.gold, borderRadius:99,
-                  width:`${progress}%`, transition:"width 0.2s ease" }}/>
+              <div style={{ color:T.gold, fontWeight:700, fontSize:15,
+                letterSpacing:"0.12em", marginBottom:10 }}>PROCESSING</div>
+              <div style={{ color:T.muted, fontSize:12, marginBottom:16, minHeight:18 }}>
+                {progLabel}
               </div>
-              <div style={{ color:T.muted, fontSize:11, marginTop:6 }}>{progress}%</div>
+              <div style={{ width:200, height:4, background:"rgba(255,255,255,0.08)",
+                borderRadius:99, overflow:"hidden", margin:"0 auto" }}>
+                <div style={{ height:"100%", background:T.gold, borderRadius:99,
+                  width:`${progress}%`, transition:"width 0.25s ease" }}/>
+              </div>
+              <div style={{ color:T.muted, fontSize:11, marginTop:8 }}>{progress}%</div>
             </div>
           </div>
+        )}
+
+        {/* ── DONE: result ── */}
+        {stage==="done" && result && (
+          <img src={result} alt="Scanned"
+            style={{ maxWidth:"100%", maxHeight:"100%", objectFit:"contain",
+              borderRadius:4, boxShadow:"0 0 0 1px rgba(212,175,55,0.15)" }}/>
         )}
       </div>
 
-      {/* Bottom controls */}
+      {/* ── Bottom controls — compact so preview gets maximum space ── */}
       <div style={{
         flexShrink:0, background:T.card, borderTop:`1px solid ${T.border}`,
-        paddingTop:12, paddingLeft:14, paddingRight:14,
-        paddingBottom:"max(16px, env(safe-area-inset-bottom, 16px))",
+        padding:`10px 12px max(12px, env(safe-area-inset-bottom, 12px))`,
       }}>
-        {/* Mode selector — only shown when photo is loaded but not yet scanned */}
-        {stage === "preview" && (
-          <div style={{ marginBottom:10 }}>
-            <div style={{ color:T.muted, fontSize:10, fontWeight:700,
-              letterSpacing:"0.12em", marginBottom:7 }}>SCAN MODE</div>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:7 }}>
-              {[
-                { id:"adaptive", icon:"🔳", label:"B&W SCAN",  sub:"Best for most docs" },
-                { id:"color",    icon:"🌈", label:"COLOUR",    sub:"Keep colours" },
-              ].map(m => (
-                <button key={m.id} onClick={()=>setScanMode(m.id)} style={{
-                  padding:"9px 10px", borderRadius:8, cursor:"pointer", textAlign:"left",
-                  border:`1px solid ${scanMode===m.id?T.gold:T.border}`,
-                  background: scanMode===m.id?"rgba(212,175,55,0.1)":"transparent",
-                  WebkitTapHighlightColor:"transparent",
-                }}>
-                  <div style={{ fontSize:16, marginBottom:3 }}>{m.icon}</div>
-                  <div style={{ color:scanMode===m.id?T.gold:T.text,
-                    fontSize:11, fontWeight:700, letterSpacing:"0.06em" }}>{m.label}</div>
-                  <div style={{ color:T.muted, fontSize:10, marginTop:1 }}>{m.sub}</div>
-                </button>
-              ))}
-            </div>
+
+        {/* Mode strip — scrollable, shown in preview/crop/done */}
+        {(stage==="preview"||stage==="crop"||stage==="done") && (
+          <div style={{
+            display:"flex", gap:6, marginBottom:9,
+            overflowX:"auto", paddingBottom:2,
+            scrollbarWidth:"none", msOverflowStyle:"none",
+          }}>
+            {MODES.map(m=>(
+              <button key={m.id} onClick={()=>setScanMode(m.id)} style={{
+                flexShrink:0, padding:"7px 11px", borderRadius:8, cursor:"pointer",
+                border:`1px solid ${scanMode===m.id?T.gold:T.border}`,
+                background: scanMode===m.id?"rgba(212,175,55,0.12)":"transparent",
+                WebkitTapHighlightColor:"transparent", textAlign:"center",
+              }}>
+                <div style={{ fontSize:14 }}>{m.icon}</div>
+                <div style={{ color:scanMode===m.id?T.gold:T.text,
+                  fontSize:10, fontWeight:700, letterSpacing:"0.05em", marginTop:2, whiteSpace:"nowrap" }}>
+                  {m.label}
+                </div>
+              </button>
+            ))}
           </div>
         )}
 
-        <div style={{ display:"flex", gap:8, marginBottom:8 }}>
-          {/* Left: retake or choose */}
-          <button onClick={stage==="done"?handleRetake:()=>fileRef.current?.click()} style={{
-            flex:1, height:50, background:T.surface, color:T.text,
-            border:`1px solid ${T.border}`, borderRadius:10,
-            fontWeight:600, fontSize:13, cursor:"pointer",
-            display:"flex", alignItems:"center", justifyContent:"center", gap:6,
-            WebkitTapHighlightColor:"transparent",
-          }}>
-            {stage==="done" ? "🔄 Retake" : "📁 Choose Photo"}
+        {/* Main action row */}
+        <div style={{ display:"flex", gap:7, marginBottom:7 }}>
+          {/* Left: choose / retake */}
+          <button
+            onClick={stage==="done"?handleRetake:()=>fileRef.current?.click()}
+            disabled={stage==="processing"}
+            style={{
+              flex:1, height:48, background:T.surface, color:T.text,
+              border:`1px solid ${T.border}`, borderRadius:10,
+              fontWeight:600, fontSize:12, cursor:stage==="processing"?"not-allowed":"pointer",
+              display:"flex", alignItems:"center", justifyContent:"center", gap:5,
+              WebkitTapHighlightColor:"transparent", opacity:stage==="processing"?0.4:1,
+            }}>
+            {stage==="done"?"🔄 Retake":"📁 Choose Photo"}
           </button>
 
-          {/* Right: scan or use */}
-          {stage === "preview" && (
+          {/* Right: crop confirm / scan / use */}
+          {stage==="crop" && (
+            <button onClick={()=>setStage("preview")} style={{
+              flex:1, height:48, background:T.gold, color:"#000",
+              border:"none", borderRadius:10, fontWeight:800, fontSize:12,
+              letterSpacing:"0.06em", cursor:"pointer",
+              WebkitTapHighlightColor:"transparent",
+            }}>✓ CONFIRM CROP</button>
+          )}
+          {stage==="preview" && (
             <button onClick={handleScan} style={{
-              flex:1, height:50, background:T.gold, color:"#000",
-              border:"none", borderRadius:10,
-              fontWeight:800, fontSize:13, letterSpacing:"0.06em",
-              cursor:"pointer", WebkitTapHighlightColor:"transparent",
-              display:"flex", alignItems:"center", justifyContent:"center", gap:7,
+              flex:1, height:48, background:T.gold, color:"#000",
+              border:"none", borderRadius:10, fontWeight:800, fontSize:13,
+              letterSpacing:"0.06em", cursor:"pointer",
+              display:"flex", alignItems:"center", justifyContent:"center", gap:6,
+              WebkitTapHighlightColor:"transparent",
             }}>✦ SCAN IT</button>
           )}
-          {stage === "done" && (
+          {stage==="done" && (
             <button onClick={handleUse} style={{
-              flex:2, height:50, background:T.gold, color:"#000",
-              border:"none", borderRadius:10,
-              fontWeight:800, fontSize:13, letterSpacing:"0.06em",
-              cursor:"pointer", WebkitTapHighlightColor:"transparent",
+              flex:2, height:48, background:T.gold, color:"#000",
+              border:"none", borderRadius:10, fontWeight:800, fontSize:13,
+              letterSpacing:"0.06em", cursor:"pointer",
+              WebkitTapHighlightColor:"transparent",
             }}>✓ USE THIS SCAN</button>
           )}
           {(stage==="idle"||stage==="processing") && (
             <button disabled style={{
-              flex:1, height:50, background:T.surface, color:T.muted,
+              flex:1, height:48, background:T.surface, color:T.muted,
               border:`1px solid ${T.border}`, borderRadius:10,
-              fontWeight:800, fontSize:13, cursor:"not-allowed",
+              fontWeight:800, fontSize:12, cursor:"not-allowed",
             }}>✦ SCAN IT</button>
           )}
         </div>
 
         <button onClick={onClose} style={{
-          width:"100%", height:42, background:"transparent", color:T.muted,
+          width:"100%", height:38, background:"transparent", color:T.muted,
           border:`1px solid ${T.border}`, borderRadius:9,
-          fontWeight:600, fontSize:13, cursor:"pointer",
+          fontWeight:600, fontSize:12, cursor:"pointer",
           WebkitTapHighlightColor:"transparent",
         }}>✕ CANCEL</button>
       </div>
