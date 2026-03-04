@@ -1,4 +1,6 @@
 // shared.js
+import React from "react";
+
 export const API_URL =
   "https://script.google.com/macros/s/AKfycbwDJZilqySP8zZBHetfQyd-xloh3dz_eKbpwwkLiKohqeQDIRPM8L_H6AjtTU7CSYaT/exec";
 
@@ -20,16 +22,34 @@ export const T = {
 
 export const GLOBAL_CSS = `
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { background: ${T.bg}; color: ${T.text}; font-family: 'Inter', system-ui, sans-serif; }
+  html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+  html, body {
+    background: ${T.bg};
+    color: ${T.text};
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif;
+    /* prevent overscroll bounce interfering with fixed overlays */
+    overscroll-behavior: none;
+  }
   input, select, textarea, button { font-family: inherit; }
-  input[type=date]::-webkit-calendar-picker-indicator { filter: invert(0.6); cursor: pointer; }
+  /* stop iOS from zooming into inputs */
+  input, select, textarea { font-size: 16px !important; }
+  input[type=date]::-webkit-calendar-picker-indicator,
   input[type=time]::-webkit-calendar-picker-indicator { filter: invert(0.6); cursor: pointer; }
+  /* hide number spinners */
+  input[type=number]::-webkit-inner-spin-button,
+  input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+  input[type=number] { -moz-appearance: textfield; }
+  /* tap highlight */
+  * { -webkit-tap-highlight-color: transparent; }
+  button { touch-action: manipulation; }
+
   @keyframes spin    { to { transform: rotate(360deg); } }
-  @keyframes fadeUp  { from { opacity:0; transform:translateY(12px); } to { opacity:1; transform:translateY(0); } }
-  @keyframes pop     { 0%{transform:scale(0.88);opacity:0} 60%{transform:scale(1.03)} 100%{transform:scale(1);opacity:1} }
-  @keyframes pulse   { 0%,100%{opacity:1} 50%{opacity:0.4} }
-  .fadeUp { animation: fadeUp 0.3s ease both; }
-  .pop    { animation: pop 0.35s cubic-bezier(.34,1.56,.64,1) both; }
+  @keyframes fadeUp  { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
+  @keyframes pop     { 0%{transform:scale(0.9);opacity:0} 60%{transform:scale(1.02)} 100%{transform:scale(1);opacity:1} }
+  @keyframes pulse   { 0%,100%{opacity:1} 50%{opacity:0.35} }
+  @keyframes scanBeam { 0%{top:8%} 50%{top:82%} 100%{top:8%} }
+  .fadeUp { animation: fadeUp 0.28s ease both; }
+  .pop    { animation: pop 0.32s cubic-bezier(.34,1.56,.64,1) both; }
 `;
 
 export function injectGlobalStyles() {
@@ -41,11 +61,12 @@ export function injectGlobalStyles() {
 }
 
 // ── Spinner ──────────────────────────────────────────────────────────────────
-export function Spinner({ size = 16, color = T.gold }) {
+export function Spinner({ size = 18, color = T.gold }) {
   return (
     <span style={{
       display: "inline-block", width: size, height: size, flexShrink: 0,
-      border: `2px solid rgba(255,255,255,0.08)`, borderTop: `2px solid ${color}`,
+      border: `2px solid rgba(255,255,255,0.08)`,
+      borderTop: `2px solid ${color}`,
       borderRadius: "50%", animation: "spin 0.7s linear infinite",
     }}/>
   );
@@ -55,9 +76,9 @@ export function Spinner({ size = 16, color = T.gold }) {
 export function Label({ text, required }) {
   return (
     <div style={{
-      color: T.muted, fontSize: 10, fontWeight: 600,
-      letterSpacing: "0.12em", textTransform: "uppercase",
-      marginTop: 14, marginBottom: 5,
+      color: T.muted, fontSize: 11, fontWeight: 600,
+      letterSpacing: "0.1em", textTransform: "uppercase",
+      marginTop: 16, marginBottom: 6,
     }}>
       {text}{required && <span style={{ color: T.danger }}> ✱</span>}
     </div>
@@ -69,10 +90,19 @@ export function Input({ style, ...props }) {
   return (
     <input
       style={{
-        width: "100%", padding: "10px 12px", background: T.surface,
-        border: `1px solid ${T.border}`, color: T.text,
-        borderRadius: 8, fontSize: 14, outline: "none",
-        transition: "border-color 0.15s", ...style,
+        width: "100%",
+        // min 48px tall — comfortable thumb target
+        padding: "13px 14px",
+        background: T.surface,
+        border: `1px solid ${T.border}`,
+        color: T.text,
+        borderRadius: 10,
+        fontSize: 16,     // prevents iOS zoom
+        outline: "none",
+        transition: "border-color 0.15s",
+        WebkitAppearance: "none",
+        appearance: "none",
+        ...style,
       }}
       onFocus={e => (e.target.style.borderColor = T.goldDim)}
       onBlur={e  => (e.target.style.borderColor = T.border)}
@@ -86,11 +116,21 @@ export function Textarea({ style, ...props }) {
   return (
     <textarea
       style={{
-        width: "100%", padding: "10px 12px", background: T.surface,
-        border: `1px solid ${T.border}`, color: T.text,
-        borderRadius: 8, fontSize: 14, resize: "vertical",
-        minHeight: 100, outline: "none", lineHeight: 1.6,
-        transition: "border-color 0.15s", ...style,
+        width: "100%",
+        padding: "13px 14px",
+        background: T.surface,
+        border: `1px solid ${T.border}`,
+        color: T.text,
+        borderRadius: 10,
+        fontSize: 16,
+        resize: "vertical",
+        minHeight: 96,
+        outline: "none",
+        lineHeight: 1.55,
+        transition: "border-color 0.15s",
+        WebkitAppearance: "none",
+        appearance: "none",
+        ...style,
       }}
       onFocus={e => (e.target.style.borderColor = T.goldDim)}
       onBlur={e  => (e.target.style.borderColor = T.border)}
@@ -104,12 +144,21 @@ export function Select({ children, style, ...props }) {
   return (
     <select
       style={{
-        width: "100%", padding: "10px 12px", background: T.surface,
-        border: `1px solid ${T.border}`, color: T.text,
-        borderRadius: 8, fontSize: 14, outline: "none", appearance: "none",
-        backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7394' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E")`,
-        backgroundRepeat: "no-repeat", backgroundPosition: "right 12px center",
-        transition: "border-color 0.15s", ...style,
+        width: "100%",
+        padding: "13px 40px 13px 14px",
+        background: T.surface,
+        border: `1px solid ${T.border}`,
+        color: T.text,
+        borderRadius: 10,
+        fontSize: 16,
+        outline: "none",
+        appearance: "none",
+        WebkitAppearance: "none",
+        backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%236b7394' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E")`,
+        backgroundRepeat: "no-repeat",
+        backgroundPosition: "right 14px center",
+        transition: "border-color 0.15s",
+        ...style,
       }}
       onFocus={e => (e.target.style.borderColor = T.goldDim)}
       onBlur={e  => (e.target.style.borderColor = T.border)}
@@ -127,17 +176,28 @@ export function GoldBtn({ children, disabled, loading, onClick, style }) {
       onClick={onClick}
       disabled={disabled || loading}
       style={{
-        width: "100%", padding: "13px 16px",
+        width: "100%",
+        // 52px min height = comfortable thumb target
+        minHeight: 52,
+        padding: "0 16px",
         background: disabled ? "#1e2230" : T.gold,
         color: disabled ? T.muted : "#000",
-        border: "none", borderRadius: 8,
-        fontWeight: 800, fontSize: 13, letterSpacing: "0.1em",
+        border: "none",
+        borderRadius: 12,
+        fontWeight: 800,
+        fontSize: 14,
+        letterSpacing: "0.08em",
         cursor: disabled ? "not-allowed" : "pointer",
-        display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-        transition: "all 0.15s", opacity: loading ? 0.85 : 1, ...style,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 8,
+        transition: "opacity 0.15s",
+        opacity: loading ? 0.8 : 1,
+        ...style,
       }}
     >
-      {loading && <Spinner size={14} color={disabled ? T.muted : "#000"} />}
+      {loading && <Spinner size={16} color={disabled ? T.muted : "#000"} />}
       {children}
     </button>
   );
@@ -149,19 +209,21 @@ export function GhostBtn({ children, onClick, danger, style }) {
     <button
       onClick={onClick}
       style={{
-        width: "100%", padding: "11px 16px", background: "transparent",
+        width: "100%",
+        minHeight: 52,
+        padding: "0 16px",
+        background: "transparent",
         color: danger ? T.danger : T.text,
-        border: `1px solid ${danger ? "rgba(239,68,68,0.3)" : T.border}`,
-        borderRadius: 8, fontWeight: 600, fontSize: 13, letterSpacing: "0.06em",
-        cursor: "pointer", transition: "all 0.15s", ...style,
-      }}
-      onMouseEnter={e => {
-        e.currentTarget.style.background = T.surface;
-        e.currentTarget.style.borderColor = danger ? T.danger : T.borderHi;
-      }}
-      onMouseLeave={e => {
-        e.currentTarget.style.background = "transparent";
-        e.currentTarget.style.borderColor = danger ? "rgba(239,68,68,0.3)" : T.border;
+        border: `1px solid ${danger ? "rgba(239,68,68,0.35)" : T.border}`,
+        borderRadius: 12,
+        fontWeight: 600,
+        fontSize: 14,
+        letterSpacing: "0.05em",
+        cursor: "pointer",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        ...style,
       }}
     >
       {children}
@@ -169,21 +231,31 @@ export function GhostBtn({ children, onClick, danger, style }) {
   );
 }
 
-// ── Card shell ───────────────────────────────────────────────────────────────
+// ── PageShell ─────────────────────────────────────────────────────────────────
 export function PageShell({ children, maxW = 480, animate = "fadeUp" }) {
   return (
     <div style={{
-      background: T.bg, minHeight: "100vh", width: "100%",
-      display: "flex", justifyContent: "center", alignItems: "flex-start",
-      padding: "24px 12px 60px", boxSizing: "border-box",
+      background: T.bg,
+      minHeight: "100svh",   // svh = small viewport height — correct on mobile
+      width: "100%",
+      display: "flex",
+      justifyContent: "center",
+      alignItems: "flex-start",
+      // safe-area padding for notch / home-bar devices
+      padding: "20px 14px calc(env(safe-area-inset-bottom, 0px) + 48px)",
+      boxSizing: "border-box",
     }}>
       <div
         className={animate}
         style={{
-          width: "100%", maxWidth: maxW, background: T.card,
-          borderRadius: 14, border: `1px solid ${T.border}`,
-          borderLeft: `3px solid ${T.gold}`, padding: "24px 20px",
-          boxShadow: "0 20px 60px rgba(0,0,0,0.55)",
+          width: "100%",
+          maxWidth: maxW,
+          background: T.card,
+          borderRadius: 16,
+          border: `1px solid ${T.border}`,
+          borderLeft: `3px solid ${T.gold}`,
+          padding: "22px 16px",
+          boxShadow: "0 16px 48px rgba(0,0,0,0.5)",
         }}
       >
         {children}
@@ -196,10 +268,13 @@ export function PageShell({ children, maxW = 480, animate = "fadeUp" }) {
 export function Logo({ sub = "FIELD COMMAND" }) {
   return (
     <div style={{ textAlign: "center", marginBottom: 24 }}>
-      <div style={{ color: T.gold, fontSize: 10, fontWeight: 700, letterSpacing: "0.45em" }}>
+      <div style={{ color: T.gold, fontSize: 10, fontWeight: 700, letterSpacing: "0.4em" }}>
         BLACK DROP TRUCKING
       </div>
-      <div style={{ color: T.gold, fontSize: 22, fontWeight: 800, letterSpacing: "0.2em", marginTop: 2 }}>
+      <div style={{
+        color: T.gold, fontSize: 24, fontWeight: 800,
+        letterSpacing: "0.18em", marginTop: 2,
+      }}>
         {sub}
       </div>
       <div style={{ width: 36, height: 2, background: T.gold, margin: "8px auto 0" }} />
@@ -210,19 +285,22 @@ export function Logo({ sub = "FIELD COMMAND" }) {
 // ── StatusBadge ───────────────────────────────────────────────────────────────
 export function StatusBadge({ status }) {
   const map = {
-    PENDING:      { color: T.warn,    bg: "rgba(245,158,11,0.12)",  dot: T.warn },
-    APPROVED:     { color: T.success, bg: "rgba(34,197,94,0.12)",   dot: T.success },
-    "BOUNCE BACK":{ color: T.danger,  bg: "rgba(239,68,68,0.12)",   dot: T.danger },
+    "PENDING":      { color: T.warn,    bg: "rgba(245,158,11,0.12)",  dot: T.warn    },
+    "APPROVED":     { color: T.success, bg: "rgba(34,197,94,0.12)",   dot: T.success },
+    "BOUNCE BACK":  { color: T.danger,  bg: "rgba(239,68,68,0.12)",   dot: T.danger  },
   };
   const s = map[status] ?? { color: T.muted, bg: T.surface, dot: T.muted };
   return (
     <span style={{
       display: "inline-flex", alignItems: "center", gap: 5,
-      padding: "3px 10px", borderRadius: 99,
-      background: s.bg, color: s.color, fontSize: 10, fontWeight: 700, letterSpacing: "0.08em",
+      padding: "4px 10px", borderRadius: 99,
+      background: s.bg, color: s.color,
+      fontSize: 11, fontWeight: 700, letterSpacing: "0.06em",
+      whiteSpace: "nowrap",
     }}>
       <span style={{
-        width: 6, height: 6, borderRadius: "50%", background: s.dot, flexShrink: 0,
+        width: 6, height: 6, borderRadius: "50%",
+        background: s.dot, flexShrink: 0,
         animation: status === "PENDING" ? "pulse 1.5s ease infinite" : "none",
       }}/>
       {status}
@@ -235,9 +313,11 @@ export function ErrorMsg({ msg }) {
   if (!msg) return null;
   return (
     <div style={{
-      color: T.danger, fontSize: 12, marginTop: 8, padding: "8px 12px",
-      background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)",
-      borderRadius: 6, textAlign: "center",
+      color: T.danger, fontSize: 13, marginTop: 10,
+      padding: "10px 14px",
+      background: "rgba(239,68,68,0.08)",
+      border: "1px solid rgba(239,68,68,0.25)",
+      borderRadius: 8, textAlign: "center", lineHeight: 1.5,
     }}>
       ⚠ {msg}
     </div>
@@ -245,25 +325,47 @@ export function ErrorMsg({ msg }) {
 }
 
 // ── SectionCard ───────────────────────────────────────────────────────────────
-export function SectionCard({ title, children, right }) {
+export function SectionCard({ title, children, right, style }) {
   return (
     <div style={{
-      background: T.surface, borderRadius: 10, padding: 16,
-      border: `1px solid ${T.border}`, marginBottom: 12,
+      background: T.surface,
+      borderRadius: 12,
+      padding: "16px 14px",
+      border: `1px solid ${T.border}`,
+      marginBottom: 12,
+      ...style,
     }}>
       {title && (
         <div style={{
-          display: "flex", justifyContent: "space-between",
-          alignItems: "center", marginBottom: 14,
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: 14,
+          gap: 8,
         }}>
           <div style={{
-            color: T.gold, fontSize: 12, fontWeight: 700, letterSpacing: "0.15em",
+            color: T.gold, fontSize: 12, fontWeight: 700,
+            letterSpacing: "0.14em", flexShrink: 0,
           }}>
             {title}
           </div>
           {right}
         </div>
       )}
+      {children}
+    </div>
+  );
+}
+
+// ── Grid2 helper ─────────────────────────────────────────────────────────────
+// Two-column grid that collapses to 1-col on very narrow screens
+export function Grid2({ children, gap = 10 }) {
+  return (
+    <div style={{
+      display: "grid",
+      gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+      gap,
+    }}>
       {children}
     </div>
   );
