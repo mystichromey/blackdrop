@@ -494,214 +494,211 @@ function TicketSuccess({ onBack }) {
   );
 }
 
-// ─── DOCUMENT SCANNER — Mobile-First v5 ─────────────────────────────────────
-// Key fix: canvas always fills full screen width. Adjust stage zooms into
-// detected document region. Pinch-to-zoom on adjust canvas.
+// ─── DOCUMENT SCANNER v6 ─────────────────────────────────────────────────────
+// Three stages: cam | crop | enhance
+// cam:     fullscreen video + 15fps Sobel detection + canvas overlay (no React rerenders in draw loop)
+// crop:    frozen image + draggable handles on full-width canvas + pinch zoom
+// enhance: filter strip + final preview + confirm
+//
 function ScannerModal({ open, onClose, onUse }) {
-  const [stage,      setStage]      = useState("capture");
-  const [docFound,   setDocFound]   = useState(false);
-  const [autoSnap,   setAutoSnap]   = useState(true);
-  const [stableCnt,  setStableCnt]  = useState(0);
-  const [corners,    setCorners]    = useState(null);
-  const [filter,     setFilter]     = useState("document");
-  const [processing, setProcessing] = useState(false);
-  const [finalImage, setFinalImage] = useState(null);
-  const [camReady,   setCamReady]   = useState(false);
-  const [camErr,     setCamErr]     = useState(false);
-  const [liveC,      setLiveC]      = useState(null);
-  const [outSize,    setOutSize]    = useState({w:0,h:0});
-  // zoom/pan state for adjust stage
-  const [zoom,       setZoom]       = useState(1);
-  const [pan,        setPan]        = useState({x:0,y:0});
+  const [stage,    setStage]    = useState("cam");
+  const [docFound, setDocFound] = useState(false);
+  const [autoSnap, setAutoSnap] = useState(true);
+  const [stableN,  setStableN]  = useState(0);
+  const [filter,   setFilter]   = useState("document");
+  const [busy,     setBusy]     = useState(false);
+  const [finalImg, setFinalImg] = useState(null);
+  const [camReady, setCamReady] = useState(false);
+  const [camErr,   setCamErr]   = useState(false);
+  const [outSz,    setOutSz]    = useState({w:0,h:0});
+  const [cropZoom, setCropZoom] = useState(1);
+  const [tick,     setTick]     = useState(0); // force crop redraw
 
-  const vidRef    = useRef(null);
-  const streamRef = useRef(null);
-  const capCanv   = useRef(null);
-  const adjCanv   = useRef(null);
-  const adjWrap   = useRef(null);
-  const outCanv   = useRef(null);
-  const overlayRef= useRef(null);   // canvas drawn on top of live video
-  const fileRef   = useRef(null);
-  const imgRef    = useRef(null);
-  const dragR     = useRef(null);
-  const loopR     = useRef(null);
-  const drawLoopR = useRef(null);   // 30fps overlay draw loop
+  const vidR    = useRef(null);
+  const streamR = useRef(null);
+  const ovR     = useRef(null);   // live overlay canvas
+  const cropR   = useRef(null);   // crop editor canvas
+  const capR    = useRef(null);   // hidden capture canvas
+  const outR    = useRef(null);   // hidden output canvas
+  const fileR   = useRef(null);
+
+  const imgR      = useRef(null);
+  const cornR     = useRef(null);   // normalised corners [{x,y}]
+  const smoothBuf = useRef([]);
+  const smoothR   = useRef(null);
   const stableR   = useRef(0);
-  const prevPts   = useRef(null);
+  const prevDetR  = useRef(null);
   const autoR     = useRef(true);
-  const cornersR  = useRef(null);
-  const liveCRef  = useRef(null);   // ref mirror of liveC for draw loop
-  const docFoundR = useRef(false);
-  const pinchRef  = useRef(null);
+  const dragR     = useRef(null);
+  const pinchR    = useRef(null);
+  const detLoopR  = useRef(null);
+  const drawLoopR = useRef(null);
+  const detTR     = useRef(0);
   autoR.current   = autoSnap;
 
-  useEffect(() => {
-    if (!open) return;
-    reset(); boot();
-    return () => killAll();
-  }, [open]);
+  // open/close
+  useEffect(()=>{
+    if(!open)return;
+    fullReset(); startCam();
+    return stopAll;
+  },[open]);
 
-  function reset() {
-    setStage("capture"); setDocFound(false); setCorners(null);
-    setLiveC(null); setFilter("document"); setFinalImage(null);
-    setProcessing(false); setCamReady(false); setCamErr(false);
-    setZoom(1); setPan({x:0,y:0});
-    stableR.current=0; prevPts.current=null; dragR.current=null; cornersR.current=null;
-    liveCRef.current=null; docFoundR.current=false;
+  function fullReset(){
+    setStage("cam");setDocFound(false);setFinalImg(null);
+    setFilter("document");setBusy(false);setCamReady(false);setCamErr(false);
+    setStableN(0);setCropZoom(1);
+    smoothBuf.current=[];smoothR.current=null;stableR.current=0;
+    prevDetR.current=null;dragR.current=null;cornR.current=null;pinchR.current=null;
   }
 
-  async function boot() {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
+  async function startCam(){
+    try{
+      const s=await navigator.mediaDevices.getUserMedia({
         video:{facingMode:{ideal:"environment"},width:{ideal:1920,min:640},height:{ideal:1440,min:480}}
       });
-      streamRef.current = stream;
-      if (vidRef.current) { vidRef.current.srcObject=stream; await vidRef.current.play(); }
+      streamR.current=s;
+      if(vidR.current){vidR.current.srcObject=s;await vidR.current.play();}
       setCamReady(true);
-    } catch { setCamErr(true); }
+    }catch{setCamErr(true);}
   }
 
-  function killAll() {
-    if (loopR.current)    { cancelAnimationFrame(loopR.current);    loopR.current=null; }
-    if (drawLoopR.current){ cancelAnimationFrame(drawLoopR.current); drawLoopR.current=null; }
-    if (streamRef.current){ streamRef.current.getTracks().forEach(t=>t.stop()); streamRef.current=null; }
+  function stopAll(){
+    if(detLoopR.current){cancelAnimationFrame(detLoopR.current);detLoopR.current=null;}
+    if(drawLoopR.current){cancelAnimationFrame(drawLoopR.current);drawLoopR.current=null;}
+    if(streamR.current){streamR.current.getTracks().forEach(t=>t.stop());streamR.current=null;}
   }
 
-  // ── detection loop (throttled 220ms)
-  const lastT = useRef(0);
+  // DETECTION LOOP — 15fps throttle
   useEffect(()=>{
-    if (!camReady || stage!=="capture") return;
-    const tick = () => {
-      const now = Date.now();
-      if (now - lastT.current > 220) { lastT.current=now; runDetect(); }
-      loopR.current = requestAnimationFrame(tick);
+    if(!camReady||stage!=="cam")return;
+    const tick=()=>{
+      const now=Date.now();
+      if(now-detTR.current>=66){detTR.current=now;runDetect();}
+      detLoopR.current=requestAnimationFrame(tick);
     };
-    loopR.current = requestAnimationFrame(tick);
-    return ()=>{ if(loopR.current) cancelAnimationFrame(loopR.current); };
+    detLoopR.current=requestAnimationFrame(tick);
+    return()=>{if(detLoopR.current)cancelAnimationFrame(detLoopR.current);};
   },[camReady,stage]);
 
-  function runDetect() {
-    const v=vidRef.current; if(!v||v.readyState<2||!v.videoWidth) return;
-    const W=320, H=Math.round(320*v.videoHeight/Math.max(v.videoWidth,1));
-    const c=document.createElement("canvas"); c.width=W; c.height=H;
-    c.getContext("2d").drawImage(v,0,0,W,H);
-    const found=sobelFind(c.getContext("2d"),W,H);
-    if (found) {
-      liveCRef.current=found; docFoundR.current=true;
-      setLiveC(found); setDocFound(true);
-      if (autoR.current && prevPts.current) {
-        const moved=found.reduce((s,p,i)=>s+Math.hypot(p.x-prevPts.current[i].x,p.y-prevPts.current[i].y),0);
-        if (moved<0.022) {
-          stableR.current++; setStableCnt(stableR.current);
-          if (stableR.current>=5) { snap(); return; }
-        } else { stableR.current=0; setStableCnt(0); }
+  function runDetect(){
+    const v=vidR.current;
+    if(!v||v.readyState<2||!v.videoWidth)return;
+    const DW=320,DH=Math.round(320*v.videoHeight/v.videoWidth);
+    const c=document.createElement("canvas");c.width=DW;c.height=DH;
+    c.getContext("2d").drawImage(v,0,0,DW,DH);
+    const found=sobelRect(c.getContext("2d"),DW,DH);
+    if(found){
+      smoothBuf.current.push(found);
+      if(smoothBuf.current.length>4)smoothBuf.current.shift();
+      smoothR.current=avgCorners(smoothBuf.current);
+      setDocFound(true);
+      if(autoR.current&&prevDetR.current){
+        const drift=found.reduce((s,p,i)=>s+Math.hypot(p.x-prevDetR.current[i].x,p.y-prevDetR.current[i].y),0);
+        if(drift<0.018){
+          stableR.current=Math.min(stableR.current+1,6);
+          setStableN(stableR.current);
+          if(stableR.current>=5){doCapture();return;}
+        }else{stableR.current=0;setStableN(0);}
       }
-      prevPts.current=found;
-    } else {
-      liveCRef.current=null; docFoundR.current=false;
-      setDocFound(false); setLiveC(null);
-      stableR.current=0; setStableCnt(0); prevPts.current=null;
+      prevDetR.current=found;
+    }else{
+      smoothBuf.current=[];smoothR.current=null;
+      setDocFound(false);setStableN(0);stableR.current=0;prevDetR.current=null;
     }
   }
 
-  // ── 30fps canvas overlay draw loop — runs independently of detection
-  useEffect(()=>{
-    if(!camReady||stage!=="capture")return;
-    const draw=()=>{
-      const canvas=overlayRef.current;
-      const v=vidRef.current;
-      if(!canvas||!v||v.readyState<2)return;
-      // Match canvas pixel size to its CSS display size
-      const dpr=window.devicePixelRatio||1;
-      const cw=canvas.offsetWidth, ch=canvas.offsetHeight;
-      if(canvas.width!==cw*dpr||canvas.height!==ch*dpr){
-        canvas.width=cw*dpr; canvas.height=ch*dpr;
-      }
-      const ctx=canvas.getContext("2d");
-      ctx.clearRect(0,0,canvas.width,canvas.height);
-      const W=canvas.width, H=canvas.height;
-      ctx.scale(dpr,dpr);
-      const cw2=cw, ch2=ch; // logical pixels
+  function avgCorners(frames){
+    const n=frames.length;
+    return frames[0].map((_,i)=>({
+      x:frames.reduce((s,f)=>s+f[i].x,0)/n,
+      y:frames.reduce((s,f)=>s+f[i].y,0)/n,
+    }));
+  }
 
-      const pts=liveCRef.current;
-      if(pts){
-        // Map normalized coords → screen coords
-        const sc=pts.map(p=>({x:p.x*cw2,y:p.y*ch2}));
-        // Green fill tint
-        ctx.beginPath();
-        ctx.moveTo(sc[0].x,sc[0].y);
-        sc.forEach(p=>ctx.lineTo(p.x,p.y));
-        ctx.closePath();
-        ctx.fillStyle="rgba(34,197,94,0.07)";
-        ctx.fill();
-        // Animated glowing border
-        const t=Date.now()/600;
-        const alpha=0.7+0.3*Math.sin(t);
-        // Outer glow pass
-        ctx.beginPath();
-        ctx.moveTo(sc[0].x,sc[0].y);
-        sc.forEach(p=>ctx.lineTo(p.x,p.y));
-        ctx.closePath();
-        ctx.strokeStyle=`rgba(34,197,94,${(alpha*0.4).toFixed(2)})`;
-        ctx.lineWidth=8;
-        ctx.stroke();
-        // Main border
-        ctx.beginPath();
-        ctx.moveTo(sc[0].x,sc[0].y);
-        sc.forEach(p=>ctx.lineTo(p.x,p.y));
-        ctx.closePath();
-        ctx.strokeStyle=`rgba(34,197,94,${alpha.toFixed(2)})`;
-        ctx.lineWidth=3;
-        ctx.stroke();
-        // Corner circles
-        sc.forEach((p,i)=>{
-          ctx.beginPath();ctx.arc(p.x,p.y,8,0,Math.PI*2);
-          ctx.fillStyle="#22c55e";ctx.fill();
-          ctx.strokeStyle="rgba(255,255,255,0.8)";ctx.lineWidth=2;ctx.stroke();
-        });
-        // Corner L-brackets (CamScanner style)
-        const bLen=28,bW=4;
-        const DIRS=[[1,1],[-1,1],[-1,-1],[1,-1]];
-        ctx.strokeStyle="#fff";ctx.lineWidth=bW;ctx.lineCap="round";
-        sc.forEach((p,i)=>{
-          const[dx,dy]=DIRS[i];
-          ctx.beginPath();ctx.moveTo(p.x,p.y);ctx.lineTo(p.x+dx*bLen,p.y);ctx.stroke();
-          ctx.beginPath();ctx.moveTo(p.x,p.y);ctx.lineTo(p.x,p.y+dy*bLen);ctx.stroke();
-        });
-        ctx.setTransform(1,0,0,1,0,0);
-      } else {
-        // Guide brackets when no doc detected
-        const pad={x:cw2*0.08,y:ch2*0.12};
-        const bLen=32,bW=3.5;
-        ctx.strokeStyle="rgba(212,175,55,0.6)";ctx.lineWidth=bW;ctx.lineCap="round";
-        [[pad.x,pad.y,1,1],[cw2-pad.x,pad.y,-1,1],[cw2-pad.x,ch2-pad.y,-1,-1],[pad.x,ch2-pad.y,1,-1]].forEach(([x,y,dx,dy])=>{
-          ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+dx*bLen,y);ctx.stroke();
-          ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x,y+dy*bLen);ctx.stroke();
-        });
-        ctx.setTransform(1,0,0,1,0,0);
-      }
-    };
-    const loop=()=>{ draw(); drawLoopR.current=requestAnimationFrame(loop); };
-    drawLoopR.current=requestAnimationFrame(loop);
-    return ()=>{ if(drawLoopR.current)cancelAnimationFrame(drawLoopR.current); };
+  // OVERLAY DRAW LOOP — ~30fps
+  useEffect(()=>{
+    if(!camReady||stage!=="cam")return;
+    const tick=()=>{paintOverlay();drawLoopR.current=requestAnimationFrame(tick);};
+    drawLoopR.current=requestAnimationFrame(tick);
+    return()=>{if(drawLoopR.current)cancelAnimationFrame(drawLoopR.current);};
   },[camReady,stage]);
 
-  function sobelFind(ctx,W,H) {
+  function paintOverlay(){
+    const cv=ovR.current;if(!cv)return;
+    const dpr=window.devicePixelRatio||1;
+    const W=cv.offsetWidth,H=cv.offsetHeight;if(!W||!H)return;
+    if(cv.width!==W*dpr||cv.height!==H*dpr){cv.width=W*dpr;cv.height=H*dpr;}
+    const ctx=cv.getContext("2d");
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    ctx.clearRect(0,0,W,H);
+    const sc=smoothR.current;
+    if(sc){
+      const pts=sc.map(p=>({x:p.x*W,y:p.y*H}));
+      // fill tint
+      ctx.beginPath();ctx.moveTo(pts[0].x,pts[0].y);
+      pts.forEach(p=>ctx.lineTo(p.x,p.y));ctx.closePath();
+      ctx.fillStyle="rgba(34,197,94,0.08)";ctx.fill();
+      // pulsing glow
+      const pulse=0.5+0.4*Math.sin(Date.now()/370);
+      ctx.beginPath();ctx.moveTo(pts[0].x,pts[0].y);
+      pts.forEach(p=>ctx.lineTo(p.x,p.y));ctx.closePath();
+      ctx.strokeStyle=`rgba(34,197,94,${(0.2+0.2*pulse).toFixed(2)})`;ctx.lineWidth=10;ctx.stroke();
+      // solid border
+      ctx.beginPath();ctx.moveTo(pts[0].x,pts[0].y);
+      pts.forEach(p=>ctx.lineTo(p.x,p.y));ctx.closePath();
+      ctx.strokeStyle="#22c55e";ctx.lineWidth=2.5;ctx.stroke();
+      // white L-brackets
+      const BL=24,BW=4;
+      [[1,1],[-1,1],[-1,-1],[1,-1]].forEach(([dx,dy],i)=>{
+        const p=pts[i];
+        ctx.strokeStyle="#fff";ctx.lineWidth=BW;ctx.lineCap="round";
+        ctx.beginPath();ctx.moveTo(p.x,p.y);ctx.lineTo(p.x+dx*BL,p.y);ctx.stroke();
+        ctx.beginPath();ctx.moveTo(p.x,p.y);ctx.lineTo(p.x,p.y+dy*BL);ctx.stroke();
+      });
+      // corner dots
+      pts.forEach(p=>{
+        ctx.beginPath();ctx.arc(p.x,p.y,7,0,Math.PI*2);
+        ctx.fillStyle="#22c55e";ctx.fill();
+        ctx.strokeStyle="#fff";ctx.lineWidth=2;ctx.stroke();
+      });
+    }else{
+      // gold guide brackets
+      const px=W*0.07,py=H*0.10,BL=28;
+      ctx.strokeStyle="rgba(212,175,55,0.6)";ctx.lineWidth=3;ctx.lineCap="round";
+      [[px,py,1,1],[W-px,py,-1,1],[W-px,H-py,-1,-1],[px,H-py,1,-1]].forEach(([x,y,dx,dy])=>{
+        ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+dx*BL,y);ctx.stroke();
+        ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x,y+dy*BL);ctx.stroke();
+      });
+    }
+    ctx.setTransform(1,0,0,1,0,0);
+  }
+
+  // SOBEL edge detection
+  function sobelRect(ctx,W,H){
     const px=ctx.getImageData(0,0,W,H).data;
     const g=new Float32Array(W*H);
-    for(let i=0;i<W*H;i++) g[i]=0.299*px[i*4]+0.587*px[i*4+1]+0.114*px[i*4+2];
-    const e=new Float32Array(W*H); let mx=0;
-    for(let y=1;y<H-1;y++) for(let x=1;x<W-1;x++){
-      const gx=-g[(y-1)*W+(x-1)]-2*g[y*W+(x-1)]-g[(y+1)*W+(x-1)]+g[(y-1)*W+(x+1)]+2*g[y*W+(x+1)]+g[(y+1)*W+(x+1)];
-      const gy=-g[(y-1)*W+(x-1)]-2*g[(y-1)*W+x]-g[(y-1)*W+(x+1)]+g[(y+1)*W+(x-1)]+2*g[(y+1)*W+x]+g[(y+1)*W+(x+1)];
-      const v=Math.sqrt(gx*gx+gy*gy); e[y*W+x]=v; if(v>mx)mx=v;
+    for(let i=0;i<W*H;i++)g[i]=0.299*px[i*4]+0.587*px[i*4+1]+0.114*px[i*4+2];
+    const bl=new Float32Array(W*H);
+    for(let y=1;y<H-1;y++)for(let x=1;x<W-1;x++)
+      bl[y*W+x]=(g[(y-1)*W+(x-1)]+2*g[(y-1)*W+x]+g[(y-1)*W+(x+1)]+
+                 2*g[y*W+(x-1)]+4*g[y*W+x]+2*g[y*W+(x+1)]+
+                 g[(y+1)*W+(x-1)]+2*g[(y+1)*W+x]+g[(y+1)*W+(x+1)])/16; // Gaussian 3×3
+    const e=new Float32Array(W*H);let mx=0;
+    for(let y=1;y<H-1;y++)for(let x=1;x<W-1;x++){
+      const gx=-bl[(y-1)*W+(x-1)]-2*bl[y*W+(x-1)]-bl[(y+1)*W+(x-1)]+bl[(y-1)*W+(x+1)]+2*bl[y*W+(x+1)]+bl[(y+1)*W+(x+1)];
+      const gy=-bl[(y-1)*W+(x-1)]-2*bl[(y-1)*W+x]-bl[(y-1)*W+(x+1)]+bl[(y+1)*W+(x-1)]+2*bl[(y+1)*W+x]+bl[(y+1)*W+(x+1)];
+      const v=Math.sqrt(gx*gx+gy*gy);e[y*W+x]=v;if(v>mx)mx=v;
     }
-    if(mx<8)return null;
-    const th=mx*0.22; let x0=W,x1=0,y0=H,y1=0,ok=false;
-    for(let y=0;y<H;y++) for(let x=0;x<W;x++) if(e[y*W+x]>th){if(x<x0)x0=x;if(x>x1)x1=x;if(y<y0)y0=y;if(y>y1)y1=y;ok=true;}
-    if(!ok||(x1-x0)/W<0.25||(y1-y0)/H<0.25)return null;
-    const p=0.01;
-    return [
+    if(mx<12)return null;
+    const th=mx*0.22;let x0=W,x1=0,y0=H,y1=0,ok=false;
+    for(let y=0;y<H;y++)for(let x=0;x<W;x++)if(e[y*W+x]>th){
+      if(x<x0)x0=x;if(x>x1)x1=x;if(y<y0)y0=y;if(y>y1)y1=y;ok=true;
+    }
+    if(!ok)return null;
+    const rw=(x1-x0)/W,rh=(y1-y0)/H;
+    if(rw<0.28||rh<0.28||rw>0.93||rh>0.93)return null;
+    const p=0.008;
+    return[
       {x:Math.max(0,x0/W-p),y:Math.max(0,y0/H-p)},
       {x:Math.min(1,x1/W+p),y:Math.max(0,y0/H-p)},
       {x:Math.min(1,x1/W+p),y:Math.min(1,y1/H+p)},
@@ -709,282 +706,235 @@ function ScannerModal({ open, onClose, onUse }) {
     ];
   }
 
-  function defCorners(){const p=0.07;return [{x:p,y:p},{x:1-p,y:p},{x:1-p,y:1-p},{x:p,y:1-p}];}
-
-  function snap() {
-    if(loopR.current){cancelAnimationFrame(loopR.current);loopR.current=null;}
-    const v=vidRef.current; if(!v)return;
-    const c=capCanv.current;
-    c.width=v.videoWidth; c.height=v.videoHeight;
-    c.getContext("2d").drawImage(v,0,0);
-    setProcessing(true); killAll();
+  // CAPTURE
+  function doCapture(){
+    if(detLoopR.current){cancelAnimationFrame(detLoopR.current);detLoopR.current=null;}
+    if(drawLoopR.current){cancelAnimationFrame(drawLoopR.current);drawLoopR.current=null;}
+    const v=vidR.current;if(!v)return;
+    const hc=capR.current;
+    hc.width=v.videoWidth;hc.height=v.videoHeight;
+    hc.getContext("2d").drawImage(v,0,0);
+    if(streamR.current){streamR.current.getTracks().forEach(t=>t.stop());streamR.current=null;}
+    setBusy(true);
     const img=new Image();
     img.onload=()=>{
-      imgRef.current=img;
-      const S=800,sc=Math.min(1,S/Math.max(img.width,img.height));
+      imgR.current=img;
+      const S=700,sc=Math.min(1,S/Math.max(img.width,img.height));
       const tw=Math.round(img.width*sc),th=Math.round(img.height*sc);
       const tc=document.createElement("canvas");tc.width=tw;tc.height=th;
       tc.getContext("2d").drawImage(img,0,0,tw,th);
-      const det=sobelFind(tc.getContext("2d"),tw,th)||defCorners();
-      cornersR.current=det; setCorners(det);
-      setProcessing(false); setStage("adjust");
+      const det=sobelRect(tc.getContext("2d"),tw,th);
+      const p=0.06;
+      cornR.current=smoothR.current||det||[{x:p,y:p},{x:1-p,y:p},{x:1-p,y:1-p},{x:p,y:1-p}];
+      setBusy(false);setStage("crop");
     };
-    img.src=c.toDataURL("image/jpeg",0.96);
+    img.src=hc.toDataURL("image/jpeg",0.97);
   }
 
-  function handleFile(e) {
-    const f=e.target.files[0]; if(!f)return;
-    killAll(); setProcessing(true);
+  function handleFile(e){
+    const f=e.target.files[0];if(!f)return;
+    stopAll();setBusy(true);
     const r=new FileReader();
     r.onload=ev=>{
       const img=new Image();
       img.onload=()=>{
-        imgRef.current=img;
-        capCanv.current.width=img.width; capCanv.current.height=img.height;
-        capCanv.current.getContext("2d").drawImage(img,0,0);
-        const S=800,sc=Math.min(1,S/Math.max(img.width,img.height));
+        imgR.current=img;
+        capR.current.width=img.width;capR.current.height=img.height;
+        capR.current.getContext("2d").drawImage(img,0,0);
+        const S=700,sc=Math.min(1,S/Math.max(img.width,img.height));
         const tw=Math.round(img.width*sc),th=Math.round(img.height*sc);
         const tc=document.createElement("canvas");tc.width=tw;tc.height=th;
         tc.getContext("2d").drawImage(img,0,0,tw,th);
-        const det=sobelFind(tc.getContext("2d"),tw,th)||defCorners();
-        cornersR.current=det; setCorners(det);
-        setProcessing(false); setStage("adjust");
+        const det=sobelRect(tc.getContext("2d"),tw,th);
+        const p=0.06;
+        cornR.current=det||[{x:p,y:p},{x:1-p,y:p},{x:1-p,y:1-p},{x:p,y:1-p}];
+        setBusy(false);setStage("crop");
       };
       img.src=ev.target.result;
     };
-    r.readAsDataURL(f); e.target.value="";
+    r.readAsDataURL(f);e.target.value="";
   }
 
-  // ── Draw adjustment canvas: ALWAYS fills full screen width
-  // Zoom is done via CSS transform on the canvas element — keeps canvas
-  // resolution high and handles crisp on retina
+  // CROP CANVAS PAINT
   useEffect(()=>{
-    if(stage!=="adjust"||!corners||!adjCanv.current||!imgRef.current)return;
-    cornersR.current=corners;
-    initAdjCanvas();
-  },[stage,corners]);
+    if(stage!=="crop"||!imgR.current||!cropR.current)return;
+    paintCrop();
+  },[stage,tick,cropZoom]);
 
-  function initAdjCanvas() {
-    const canvas=adjCanv.current, img=imgRef.current;
-    if(!canvas||!img)return;
-
-    // Canvas fills full screen width, maintains aspect ratio
-    const sw = window.innerWidth;
-    const sh = Math.round(sw * img.height / img.width);
-    canvas.width  = sw;
-    canvas.height = sh;
-    // Override CSS size to match exactly
-    canvas.style.width  = sw + "px";
-    canvas.style.height = sh + "px";
-
-    drawAdjFrame(cornersR.current);
-
-    // Auto-zoom: compute scale so detected doc fills ~85% of screen height
-    const docH = (cornersR.current[2].y - cornersR.current[0].y) * sh;
-    const targetH = window.innerHeight * 0.82;
-    const autoZ = Math.min(2.5, Math.max(1.0, targetH / Math.max(docH, 80)));
-    setZoom(autoZ);
-
-    // Auto-pan: center the detected doc vertically
-    const docCY = ((cornersR.current[0].y + cornersR.current[2].y) / 2) * sh;
-    const screenCY = window.innerHeight / 2;
-    const offsetY = screenCY - docCY * autoZ;
-    setPan({x:0, y:offsetY});
-  }
-
-  function drawAdjFrame(C) {
-    const canvas=adjCanv.current, img=imgRef.current; if(!canvas||!img)return;
-    const W=canvas.width, H=canvas.height;
-    const ctx=canvas.getContext("2d");
-    ctx.clearRect(0,0,W,H);
+  function paintCrop(){
+    const cv=cropR.current,img=imgR.current;if(!cv||!img)return;
+    // Full screen width
+    const SW=window.innerWidth,SH=Math.round(SW*img.height/img.width);
+    cv.width=SW;cv.height=SH;
+    const ctx=cv.getContext("2d"),W=SW,H=SH;
     ctx.drawImage(img,0,0,W,H);
-    const pts=C.map(c=>({x:c.x*W,y:c.y*H}));
-
-    // Darken outside selection
-    ctx.fillStyle="rgba(0,0,0,0.55)";
-    ctx.fillRect(0,0,W,H);
-    // Cut out inside
+    const C=cornR.current;if(!C)return;
+    const pts=C.map(p=>({x:p.x*W,y:p.y*H}));
+    // Darken outside
+    ctx.fillStyle="rgba(0,0,0,0.52)";ctx.fillRect(0,0,W,H);
     ctx.save();
-    ctx.beginPath(); ctx.moveTo(pts[0].x,pts[0].y);
-    pts.forEach(p=>ctx.lineTo(p.x,p.y)); ctx.closePath();
-    ctx.globalCompositeOperation="destination-out"; ctx.fill(); ctx.restore();
-    // Redraw image inside
+    ctx.beginPath();ctx.moveTo(pts[0].x,pts[0].y);
+    pts.forEach(p=>ctx.lineTo(p.x,p.y));ctx.closePath();
+    ctx.globalCompositeOperation="destination-out";ctx.fill();ctx.restore();
+    // Image inside
     ctx.save();
-    ctx.beginPath(); ctx.moveTo(pts[0].x,pts[0].y);
-    pts.forEach(p=>ctx.lineTo(p.x,p.y)); ctx.closePath();
-    ctx.clip(); ctx.drawImage(img,0,0,W,H); ctx.restore();
-    // Glowing gold border
+    ctx.beginPath();ctx.moveTo(pts[0].x,pts[0].y);
+    pts.forEach(p=>ctx.lineTo(p.x,p.y));ctx.closePath();
+    ctx.clip();ctx.drawImage(img,0,0,W,H);ctx.restore();
+    // Gold border
+    ctx.save();ctx.shadowColor="#D4AF37";ctx.shadowBlur=14;
+    ctx.strokeStyle="#D4AF37";ctx.lineWidth=3;
+    ctx.beginPath();ctx.moveTo(pts[0].x,pts[0].y);
+    pts.forEach(p=>ctx.lineTo(p.x,p.y));ctx.closePath();ctx.stroke();ctx.restore();
+    // Grid inside
     ctx.save();
-    ctx.shadowColor="#D4AF37"; ctx.shadowBlur=14;
-    ctx.strokeStyle="#D4AF37"; ctx.lineWidth=3;
-    ctx.beginPath(); ctx.moveTo(pts[0].x,pts[0].y);
-    pts.forEach(p=>ctx.lineTo(p.x,p.y)); ctx.closePath(); ctx.stroke();
+    ctx.beginPath();ctx.moveTo(pts[0].x,pts[0].y);
+    pts.forEach(p=>ctx.lineTo(p.x,p.y));ctx.closePath();ctx.clip();
+    const x0=Math.min(...pts.map(p=>p.x)),x1=Math.max(...pts.map(p=>p.x));
+    const y0=Math.min(...pts.map(p=>p.y)),y1=Math.max(...pts.map(p=>p.y));
+    const tw=(x1-x0)/3,th=(y1-y0)/3;
+    ctx.strokeStyle="rgba(212,175,55,0.12)";ctx.lineWidth=1;
+    for(let i=1;i<3;i++){
+      ctx.beginPath();ctx.moveTo(x0+tw*i,y0);ctx.lineTo(x0+tw*i,y1);ctx.stroke();
+      ctx.beginPath();ctx.moveTo(x0,y0+th*i);ctx.lineTo(x1,y0+th*i);ctx.stroke();
+    }
     ctx.restore();
-    // Corner handles: 56px outer touch zone, 22px visible circle
+    // Handles
     pts.forEach((p,i)=>{
-      // outer touch-zone ring (semi-transparent)
-      ctx.beginPath(); ctx.arc(p.x,p.y,32,0,Math.PI*2);
-      ctx.fillStyle="rgba(212,175,55,0.12)"; ctx.fill();
-      // visible circle with glow
-      ctx.save();
-      ctx.shadowColor="rgba(0,0,0,0.7)"; ctx.shadowBlur=10;
-      ctx.beginPath(); ctx.arc(p.x,p.y,22,0,Math.PI*2);
-      ctx.fillStyle=dragR.current===i?"#ffffff":"#D4AF37";
-      ctx.fill(); ctx.restore();
-      ctx.strokeStyle="rgba(0,0,0,0.5)"; ctx.lineWidth=2.5; ctx.stroke();
-      // crosshair
-      ctx.strokeStyle=dragR.current===i?"#333":"rgba(0,0,0,0.65)";
-      ctx.lineWidth=2.5;
-      ctx.beginPath(); ctx.moveTo(p.x-11,p.y); ctx.lineTo(p.x+11,p.y); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(p.x,p.y-11); ctx.lineTo(p.x,p.y+11); ctx.stroke();
+      ctx.beginPath();ctx.arc(p.x,p.y,32,0,Math.PI*2);
+      ctx.fillStyle="rgba(212,175,55,0.10)";ctx.fill();
+      ctx.save();ctx.shadowColor="rgba(0,0,0,0.85)";ctx.shadowBlur=14;
+      ctx.beginPath();ctx.arc(p.x,p.y,22,0,Math.PI*2);
+      ctx.fillStyle=dragR.current===i?"#ffffff":"#D4AF37";ctx.fill();ctx.restore();
+      ctx.strokeStyle="rgba(0,0,0,0.55)";ctx.lineWidth=3;ctx.stroke();
+      ctx.strokeStyle=dragR.current===i?"#444":"rgba(0,0,0,0.65)";ctx.lineWidth=3;ctx.lineCap="round";
+      ctx.beginPath();ctx.moveTo(p.x-11,p.y);ctx.lineTo(p.x+11,p.y);ctx.stroke();
+      ctx.beginPath();ctx.moveTo(p.x,p.y-11);ctx.lineTo(p.x,p.y+11);ctx.stroke();
     });
   }
 
-  // ── pointer events — corrected for zoom/pan transform
-  function getCanvasXY(e) {
-    const canvas=adjCanv.current; if(!canvas)return{x:0,y:0};
-    const rect=canvas.getBoundingClientRect();
-    // getBoundingClientRect already accounts for CSS transform
+  // Crop pointer events — getBoundingClientRect handles CSS scale transform
+  function cropXY(e){
+    const cv=cropR.current;if(!cv)return{cx:null,cy:null};
+    const rect=cv.getBoundingClientRect();
     const src=e.touches?e.touches[0]:e;
-    // map from screen coords into canvas coords
-    const scaleX=canvas.width/rect.width;
-    const scaleY=canvas.height/rect.height;
-    return {
-      x:(src.clientX-rect.left)*scaleX,
-      y:(src.clientY-rect.top)*scaleY,
+    return{
+      cx:(src.clientX-rect.left)*(cv.width/rect.width),
+      cy:(src.clientY-rect.top)*(cv.height/rect.height),
     };
   }
-
-  function onDown(e) {
-    if(e.touches&&e.touches.length===2){ startPinch(e); return; }
+  function cropDown(e){
+    if(e.touches&&e.touches.length===2){pinchStart(e);return;}
     e.preventDefault();
-    const{x,y}=getCanvasXY(e), canvas=adjCanv.current;
-    const pts=cornersR.current.map(p=>({x:p.x*canvas.width,y:p.y*canvas.height}));
-    // Hit radius 40px in canvas space (scaled up by zoom so actually easier on screen)
-    const hit=pts.findIndex(p=>Math.hypot(p.x-x,p.y-y)<40);
-    if(hit!==-1) dragR.current=hit;
+    const{cx,cy}=cropXY(e);if(cx===null)return;
+    const cv=cropR.current;
+    const pts=cornR.current.map(p=>({x:p.x*cv.width,y:p.y*cv.height}));
+    const hit=pts.findIndex(p=>Math.hypot(p.x-cx,p.y-cy)<44);
+    if(hit!==-1)dragR.current=hit;
   }
-
-  function onMove(e) {
-    if(e.touches&&e.touches.length===2){ movePinch(e); return; }
+  function cropMove(e){
+    if(e.touches&&e.touches.length===2){pinchMove(e);return;}
     if(dragR.current===null||dragR.current===undefined)return;
     e.preventDefault();
-    const{x,y}=getCanvasXY(e), canvas=adjCanv.current;
-    const newC=cornersR.current.map((p,i)=>i===dragR.current
-      ?{x:Math.max(0.01,Math.min(0.99,x/canvas.width)),y:Math.max(0.01,Math.min(0.99,y/canvas.height))}:p);
-    cornersR.current=newC; setCorners([...newC]); drawAdjFrame(newC);
+    const{cx,cy}=cropXY(e);if(cx===null)return;
+    const cv=cropR.current;
+    cornR.current=cornR.current.map((p,i)=>i===dragR.current
+      ?{x:Math.max(0.01,Math.min(0.99,cx/cv.width)),y:Math.max(0.01,Math.min(0.99,cy/cv.height))}:p);
+    paintCrop();
   }
-
-  function onUp(e) {
-    if(e&&e.touches&&e.touches.length===0) pinchRef.current=null;
-    dragR.current=null;
-  }
-
-  // ── pinch-to-zoom
-  function startPinch(e) {
+  function cropUp(){dragR.current=null;pinchR.current=null;setTick(n=>n+1);}
+  function pinchStart(e){
     const t=e.touches;
-    pinchRef.current={
-      dist: Math.hypot(t[0].clientX-t[1].clientX,t[0].clientY-t[1].clientY),
-      zoom,
-    };
+    pinchR.current={dist:Math.hypot(t[0].clientX-t[1].clientX,t[0].clientY-t[1].clientY),zoom:cropZoom};
   }
-  function movePinch(e) {
-    if(!pinchRef.current)return;
-    e.preventDefault();
+  function pinchMove(e){
+    if(!pinchR.current)return;e.preventDefault();
     const t=e.touches;
-    const newDist=Math.hypot(t[0].clientX-t[1].clientX,t[0].clientY-t[1].clientY);
-    const newZoom=Math.max(1,Math.min(4,pinchRef.current.zoom*(newDist/pinchRef.current.dist)));
-    setZoom(newZoom);
+    const d=Math.hypot(t[0].clientX-t[1].clientX,t[0].clientY-t[1].clientY);
+    setCropZoom(Math.max(1,Math.min(3,pinchR.current.zoom*(d/pinchR.current.dist))));
   }
 
-  // ── warp + enhance
-  function processDoc(f) {
-    setProcessing(true);
-    const C=cornersR.current||corners;
+  // WARP + ENHANCE
+  function processDoc(f){
+    setBusy(true);const C=cornR.current;
     setTimeout(()=>{
       try{
-        const img=imgRef.current,IW=img.width,IH=img.height;
+        const img=imgR.current,IW=img.width,IH=img.height;
         const pts=C.map(c=>({x:c.x*IW,y:c.y*IH}));
         const wT=Math.hypot(pts[1].x-pts[0].x,pts[1].y-pts[0].y);
         const wB=Math.hypot(pts[2].x-pts[3].x,pts[2].y-pts[3].y);
         const hL=Math.hypot(pts[3].x-pts[0].x,pts[3].y-pts[0].y);
         const hR=Math.hypot(pts[2].x-pts[1].x,pts[2].y-pts[1].y);
         const rawW=Math.max(wT,wB),rawH=Math.max(hL,hR);
-        const SC=Math.min(2.2,2600/Math.max(rawW,rawH));
+        const SC=Math.min(2.0,2400/Math.max(rawW,rawH));
         const outW=Math.round(rawW*SC),outH=Math.round(rawH*SC);
-        const srcC=document.createElement("canvas");srcC.width=IW;srcC.height=IH;
-        srcC.getContext("2d").drawImage(img,0,0);
-        const srcPx=srcC.getContext("2d").getImageData(0,0,IW,IH).data;
-        const dstC=outCanv.current;dstC.width=outW;dstC.height=outH;
-        const dstCtx=dstC.getContext("2d");
-        const dstId=dstCtx.createImageData(outW,outH);const d=dstId.data;
-        for(let dy=0;dy<outH;dy++){
-          const v=dy/outH;
-          for(let dx=0;dx<outW;dx++){
-            const u=dx/outW;
+        const sC=document.createElement("canvas");sC.width=IW;sC.height=IH;
+        sC.getContext("2d").drawImage(img,0,0);
+        const sp=sC.getContext("2d").getImageData(0,0,IW,IH).data;
+        const dc=outR.current;dc.width=outW;dc.height=outH;
+        const dctx=dc.getContext("2d");
+        const did=dctx.createImageData(outW,outH);const dd=did.data;
+        for(let dy=0;dy<outH;dy++){const v=dy/outH;
+          for(let dx=0;dx<outW;dx++){const u=dx/outW;
             const sx=(1-u)*(1-v)*pts[0].x+u*(1-v)*pts[1].x+u*v*pts[2].x+(1-u)*v*pts[3].x;
             const sy=(1-u)*(1-v)*pts[0].y+u*(1-v)*pts[1].y+u*v*pts[2].y+(1-u)*v*pts[3].y;
             const x0=Math.floor(sx),y0=Math.floor(sy),x1=Math.min(x0+1,IW-1),y1=Math.min(y0+1,IH-1);
-            const fx=sx-x0,fy=sy-y0,di=(dy*outW+dx)*4;
+            const fx=sx-x0,fy=sy-y0,ii=(dy*outW+dx)*4;
             for(let ch=0;ch<3;ch++){
-              const tl=srcPx[(y0*IW+x0)*4+ch],tr=srcPx[(y0*IW+x1)*4+ch];
-              const bl=srcPx[(y1*IW+x0)*4+ch],br=srcPx[(y1*IW+x1)*4+ch];
-              d[di+ch]=Math.round(tl*(1-fx)*(1-fy)+tr*fx*(1-fy)+bl*(1-fx)*fy+br*fx*fy);
-            }
-            d[di+3]=255;
+              const tl=sp[(y0*IW+x0)*4+ch],tr=sp[(y0*IW+x1)*4+ch];
+              const bl=sp[(y1*IW+x0)*4+ch],br=sp[(y1*IW+x1)*4+ch];
+              dd[ii+ch]=Math.round(tl*(1-fx)*(1-fy)+tr*fx*(1-fy)+bl*(1-fx)*fy+br*fx*fy);
+            }dd[ii+3]=255;
           }
         }
-        dstCtx.putImageData(dstId,0,0);
-        enhance(dstCtx,outW,outH,f);
-        setFinalImage(dstC.toDataURL("image/jpeg",0.92));
-        setFilter(f);setOutSize({w:outW,h:outH});
-        setProcessing(false);setStage("enhance");
-      }catch(err){console.error(err);setProcessing(false);}
+        dctx.putImageData(did,0,0);
+        doFilter(dctx,outW,outH,f);
+        setFinalImg(dc.toDataURL("image/jpeg",0.93));
+        setFilter(f);setOutSz({w:outW,h:outH});setBusy(false);setStage("enhance");
+      }catch(err){console.error(err);setBusy(false);}
     },30);
   }
 
-  function enhance(ctx,W,H,mode){
+  function doFilter(ctx,W,H,mode){
     if(mode==="original")return;
     const id=ctx.getImageData(0,0,W,H);const d=id.data;
-    let bgSum=0,bgN=0;
-    const cx=Math.round(W/2),cy=Math.round(H/2);
-    const sw2=Math.round(W*0.3),sh2=Math.round(H*0.3);
-    for(let y=cy-sh2;y<cy+sh2;y+=3)for(let x=cx-sw2;x<cx+sw2;x+=3){
-      const i=(y*W+x)*4;const lum=0.299*d[i]+0.587*d[i+1]+0.114*d[i+2];
-      if(lum>100){bgSum+=lum;bgN++;}
+    let bs=0,bn=0;
+    const mx=W>>1,my=H>>1,mw=W*0.3|0,mh=H*0.3|0;
+    for(let y=my-mh;y<my+mh;y+=3)for(let x=mx-mw;x<mx+mw;x+=3){
+      const i=(y*W+x)*4,l=0.299*d[i]+0.587*d[i+1]+0.114*d[i+2];
+      if(l>90){bs+=l;bn++;}
     }
-    const paperLum=bgN>20?bgSum/bgN:185;
-    const boost=paperLum<220?Math.min(1.30,215/Math.max(paperLum,80)):1.0;
+    const paper=bn>20?bs/bn:180;
+    const boost=paper<215?Math.min(1.28,210/Math.max(paper,75)):1.0;
     for(let i=0;i<d.length;i+=4){
       let r=d[i],g=d[i+1],b=d[i+2];
       if(mode==="document"){
         r=Math.min(255,r*boost);g=Math.min(255,g*boost);b=Math.min(255,b*boost);
-        const lum=0.299*r+0.587*g+0.114*b;
-        const curve=lum<80?lum*0.60:lum<140?48+(lum-80)*0.85:lum<200?99+(lum-140)*1.35:Math.min(255,180+(lum-200)*2.5);
-        const ratio=lum>0?curve/lum:1;
-        r=Math.min(255,Math.max(0,r*ratio));g=Math.min(255,Math.max(0,g*ratio));b=Math.min(255,Math.max(0,b*ratio));
+        const L=0.299*r+0.587*g+0.114*b;
+        const cv2=L<80?L*0.58:L<140?46+(L-80)*0.87:L<200?98+(L-140)*1.38:Math.min(255,181+(L-200)*2.5);
+        const rt=L>0?cv2/L:1;
+        r=Math.min(255,Math.max(0,r*rt));g=Math.min(255,Math.max(0,g*rt));b=Math.min(255,Math.max(0,b*rt));
         const fl=0.299*r+0.587*g+0.114*b;
-        d[i]=Math.round(r*0.25+fl*0.75);d[i+1]=Math.round(g*0.25+fl*0.75);d[i+2]=Math.round(b*0.25+fl*0.75);
+        d[i]=Math.round(r*0.22+fl*0.78);d[i+1]=Math.round(g*0.22+fl*0.78);d[i+2]=Math.round(b*0.22+fl*0.78);
       }else if(mode==="bw"){
-        const lum=0.299*r+0.587*g+0.114*b;let v=lum*boost;
-        v=v<70?Math.max(0,v*0.5):v<150?35+(v-70)*1.1:Math.min(255,112+(v-150)*1.8);
+        const L=0.299*r+0.587*g+0.114*b;let v=L*boost;
+        v=v<70?Math.max(0,v*0.5):v<150?34+(v-70)*1.1:Math.min(255,112+(v-150)*1.8);
         d[i]=d[i+1]=d[i+2]=Math.round(Math.min(255,v));
       }else if(mode==="highcontrast"){
-        const lum=0.299*r+0.587*g+0.114*b;let v=lum*boost;
-        v=v<90?Math.max(0,v*0.40):v<160?36+(v-90)*1.4:Math.min(255,134+(v-160)*2.0);
+        const L=0.299*r+0.587*g+0.114*b;let v=L*boost;
+        v=v<85?Math.max(0,v*0.38):v<160?32+(v-85)*1.4:Math.min(255,137+(v-160)*2.0);
         d[i]=d[i+1]=d[i+2]=Math.round(Math.min(255,v));
       }else if(mode==="sharp"){
         r=Math.min(255,r*boost);g=Math.min(255,g*boost);b=Math.min(255,b*boost);
-        d[i]=Math.min(255,Math.max(0,(r-128)*1.45+133));
-        d[i+1]=Math.min(255,Math.max(0,(g-128)*1.45+133));
-        d[i+2]=Math.min(255,Math.max(0,(b-128)*1.35+128));
+        d[i]=Math.min(255,Math.max(0,(r-128)*1.48+133));
+        d[i+1]=Math.min(255,Math.max(0,(g-128)*1.48+133));
+        d[i+2]=Math.min(255,Math.max(0,(b-128)*1.38+128));
       }
     }
     ctx.putImageData(id,0,0);
-    const str=mode==="highcontrast"?2.0:mode==="sharp"?2.5:1.6;
+    const str=mode==="highcontrast"?2.0:mode==="sharp"?2.6:1.7;
     unsharp(ctx,W,H,str);
   }
-
   function unsharp(ctx,W,H,s){
     const id=ctx.getImageData(0,0,W,H);const d=id.data;
     const bl=boxBlur(new Uint8ClampedArray(d),W,H,2);
@@ -998,274 +948,210 @@ function ScannerModal({ open, onClose, onUse }) {
     return o;
   }
 
-  function refilter(f){if(processing)return;processDoc(f);}
-
   if(!open)return null;
 
   const FILTERS=[
-    {id:"document",    icon:"📄",label:"Document",    desc:"White + sharp"},
-    {id:"bw",          icon:"◑", label:"B&W",         desc:"Clean mono"},
-    {id:"highcontrast",icon:"◆", label:"Hi-Contrast", desc:"Max legibility"},
-    {id:"sharp",       icon:"🔍",label:"Sharpened",   desc:"Text focus"},
-    {id:"original",    icon:"⬜",label:"Original",    desc:"No filter"},
+    {id:"document",    icon:"📄",label:"Document",   desc:"White + crisp"},
+    {id:"bw",          icon:"◑", label:"B&W",        desc:"Clean mono"},
+    {id:"highcontrast",icon:"◆", label:"Hi-Contrast",desc:"Max readable"},
+    {id:"sharp",       icon:"🔍",label:"Sharpened",  desc:"Text focus"},
+    {id:"original",    icon:"⬜",label:"Original",   desc:"No filter"},
   ];
 
-  return (
+  const Spin=()=>(
+    <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.75)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:14,zIndex:5}}>
+      <div style={{width:46,height:46,border:`4px solid rgba(212,175,55,0.15)`,borderTop:`4px solid ${T.gold}`,borderRadius:"50%",animation:"spin 0.7s linear infinite"}}/>
+      <div style={{color:T.gold,fontSize:13,letterSpacing:"0.12em",fontWeight:700}}>PROCESSING...</div>
+    </div>
+  );
+
+  return(
     <div style={{
-      position:"fixed",inset:0,
-      background:"#000",
-      display:"flex",flexDirection:"column",
+      position:"fixed",top:0,left:0,
+      width:"100%",height:"100dvh",
+      background:"#000",display:"flex",flexDirection:"column",
       zIndex:9999,overflow:"hidden",
       fontFamily:"'Rajdhani','Inter',sans-serif",
-      height:"100dvh",  // dynamic viewport height — handles iOS chrome bar
+      overscrollBehavior:"none",
     }}>
 
-      {/* ══ STAGE 1: CAMERA — full screen video ══ */}
-      {stage==="capture"&&(
-        <>
-          {/* video fills everything */}
-          <div style={{flex:"1 1 0",minHeight:0,position:"relative",overflow:"hidden",background:"#000"}}>
-            <video ref={vidRef} playsInline autoPlay muted
-              style={{
-                position:"absolute",inset:0,
-                width:"100%",height:"100%",
-                objectFit:"cover",
-                display:camErr?"none":"block",
-              }}/>
+      {/* ══ CAM ══ */}
+      {stage==="cam"&&<>
+        <div style={{flex:"1 1 0",minHeight:0,position:"relative",overflow:"hidden",background:"#000"}}>
+          <video ref={vidR} playsInline autoPlay muted
+            style={{position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover",display:camErr?"none":"block"}}/>
+          {!camErr&&<canvas ref={ovR} style={{position:"absolute",inset:0,width:"100%",height:"100%",pointerEvents:"none",display:"block"}}/>}
 
-            {/* Canvas overlay — drawn directly on top of video at 30fps */}
-            {!camErr&&(
-              <canvas ref={overlayRef}
-                style={{
-                  position:"absolute",inset:0,
-                  width:"100%",height:"100%",
-                  pointerEvents:"none",
-                }}/>
-            )}
-
-            {/* Status badge */}
-            {!camErr&&(
-              <div style={{
-                position:"absolute",top:16,left:"50%",transform:"translateX(-50%)",
-                background:docFound?"rgba(34,197,94,0.18)":"rgba(0,0,0,0.65)",
-                border:`1px solid ${docFound?"#22c55e":"rgba(212,175,55,0.5)"}`,
-                color:docFound?"#22c55e":T.gold,
-                padding:"6px 18px",borderRadius:99,fontSize:12,fontWeight:700,
-                letterSpacing:"0.1em",whiteSpace:"nowrap",
-                backdropFilter:"blur(10px)",pointerEvents:"none",transition:"all 0.3s",
-              }}>
-                {docFound?(autoSnap&&stableCnt>0?"⏱ HOLD STILL...":"✓ TICKET FOUND"):"📷 POINT AT TICKET"}
-              </div>
-            )}
-
-            {/* Auto-capture ring */}
-            {docFound&&autoSnap&&stableCnt>0&&(
-              <div style={{position:"absolute",bottom:16,left:"50%",transform:"translateX(-50%)",width:54,height:54,pointerEvents:"none"}}>
-                <svg viewBox="0 0 54 54" style={{transform:"rotate(-90deg)"}}>
-                  <circle cx="27" cy="27" r="23" fill="none" stroke="rgba(34,197,94,0.2)" strokeWidth="4"/>
-                  <circle cx="27" cy="27" r="23" fill="none" stroke="#22c55e" strokeWidth="4"
-                    strokeDasharray={`${2*Math.PI*23}`}
-                    strokeDashoffset={`${2*Math.PI*23*(1-stableCnt/5)}`}
-                    style={{transition:"stroke-dashoffset 0.18s"}}/>
-                </svg>
-              </div>
-            )}
-
-            {camErr&&(
-              <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16,padding:24}}>
-                <div style={{fontSize:48}}>📷</div>
-                <div style={{color:T.muted,fontSize:13,textAlign:"center",lineHeight:1.6}}>Camera unavailable.<br/>Upload a photo instead.</div>
-                <button onClick={()=>fileRef.current.click()} style={{padding:"14px 32px",background:T.gold,color:"#000",border:"none",borderRadius:12,fontWeight:800,fontSize:15,cursor:"pointer"}}>📁 UPLOAD PHOTO</button>
-              </div>
-            )}
-            {processing&&(
-              <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.72)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:14}}>
-                <div style={{width:42,height:42,border:`3px solid rgba(212,175,55,0.15)`,borderTop:`3px solid ${T.gold}`,borderRadius:"50%",animation:"spin 0.7s linear infinite"}}/>
-                <div style={{color:T.gold,fontSize:12,letterSpacing:"0.12em",fontWeight:700}}>DETECTING EDGES...</div>
-              </div>
-            )}
-          </div>
-
-          {/* Bottom controls — fixed height */}
-          <div style={{flexShrink:0,background:T.card,borderTop:`1px solid ${T.border}`,padding:"10px 14px 14px"}}>
-            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",
-              padding:"9px 12px",background:T.surface,borderRadius:12,
-              border:`1px solid ${T.border}`,marginBottom:10}}>
-              <div>
-                <div style={{color:T.text,fontSize:13,fontWeight:600}}>Auto-Capture</div>
-                <div style={{color:T.muted,fontSize:10}}>Snaps when ticket is steady</div>
-              </div>
-              <div onClick={()=>setAutoSnap(v=>!v)} style={{
-                width:48,height:27,borderRadius:14,cursor:"pointer",
-                background:autoSnap?"#22c55e":T.border,position:"relative",transition:"background 0.2s",flexShrink:0}}>
-                <div style={{position:"absolute",top:3.5,left:autoSnap?24:3.5,width:20,height:20,borderRadius:"50%",background:"#fff",transition:"left 0.2s",boxShadow:"0 1px 4px rgba(0,0,0,0.3)"}}/>
-              </div>
-            </div>
-            <div style={{display:"flex",gap:10,marginBottom:8}}>
-              {!camErr&&(
-                <button onClick={snap} disabled={!camReady||processing} style={{
-                  flex:2,height:52,background:camReady&&!processing?T.gold:T.surface,
-                  color:camReady&&!processing?"#000":T.muted,border:"none",borderRadius:12,
-                  fontWeight:800,fontSize:16,letterSpacing:"0.1em",cursor:camReady&&!processing?"pointer":"not-allowed",
-                  display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
-                  <span style={{fontSize:18}}>📸</span> CAPTURE
-                </button>
-              )}
-              <button onClick={()=>fileRef.current.click()} style={{
-                flex:1,height:52,background:T.surface,color:T.text,
-                border:`1px solid ${T.border}`,borderRadius:12,fontWeight:600,
-                fontSize:14,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>
-                <span>📁</span> Upload
-              </button>
-            </div>
-            <button onClick={onClose} style={{width:"100%",height:40,background:"transparent",color:T.muted,border:`1px solid ${T.border}`,borderRadius:10,fontWeight:600,fontSize:13,cursor:"pointer"}}>✕ CANCEL</button>
-          </div>
-        </>
-      )}
-
-      {/* ══ STAGE 2: ADJUST — canvas fills full width, zoomed ══ */}
-      {stage==="adjust"&&(
-        <>
-          {/* Header */}
-          <div style={{flexShrink:0,display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 16px",background:T.card,borderBottom:`1px solid ${T.border}`}}>
-            <div>
-              <div style={{color:T.gold,fontSize:14,fontWeight:700,letterSpacing:"0.12em"}}>✂ ADJUST EDGES</div>
-              <div style={{color:T.muted,fontSize:10,marginTop:1}}>Drag handles · Pinch to zoom</div>
-            </div>
-            <div style={{display:"flex",gap:8,alignItems:"center"}}>
-              {/* Zoom controls */}
-              <button onClick={()=>setZoom(z=>Math.max(1,+(z-0.25).toFixed(2)))} style={{width:34,height:34,background:T.surface,border:`1px solid ${T.border}`,borderRadius:8,color:T.text,fontSize:18,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>−</button>
-              <span style={{color:T.muted,fontSize:11,minWidth:32,textAlign:"center"}}>{Math.round(zoom*100)}%</span>
-              <button onClick={()=>setZoom(z=>Math.min(4,+(z+0.25).toFixed(2)))} style={{width:34,height:34,background:T.surface,border:`1px solid ${T.border}`,borderRadius:8,color:T.text,fontSize:18,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>+</button>
-              <button onClick={onClose} style={{height:34,padding:"0 12px",background:"transparent",border:`1px solid ${T.border}`,color:T.muted,borderRadius:8,cursor:"pointer",fontSize:12}}>✕</button>
-            </div>
-          </div>
-
-          {/* Scrollable canvas container — canvas is full width, CSS zoomed */}
-          <div ref={adjWrap} style={{
-            flex:"1 1 0",minHeight:0,
-            overflow:"scroll",      // both axes scroll when zoomed
-            background:"#080808",
-            // center canvas when smaller than container
-            display:"flex",
-            alignItems:"flex-start",
-            justifyContent:"center",
-          }}>
-            <canvas ref={adjCanv}
-              style={{
-                display:"block",
-                // CSS transform zoom — keeps canvas resolution, scales visually
-                transform:`scale(${zoom})`,
-                transformOrigin:"top center",
-                // When zoomed > 1 the canvas overflows — scroll handles it
-                flexShrink:0,
-                touchAction:"none",
-                cursor:"crosshair",
-              }}
-              onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp}
-              onTouchStart={onDown} onTouchMove={onMove} onTouchEnd={onUp}
-            />
-          </div>
-
-          {/* Hint + buttons */}
-          <div style={{flexShrink:0,background:T.card,borderTop:`1px solid ${T.border}`,padding:"10px 14px 14px"}}>
-            <div style={{color:T.muted,fontSize:10,textAlign:"center",letterSpacing:"0.08em",marginBottom:10}}>
-              ⊕ DRAG THE 4 GOLD HANDLES TO THE CORNERS OF YOUR TICKET
-            </div>
-            <div style={{display:"flex",gap:10}}>
-              <button onClick={()=>{reset();boot();}} style={{flex:1,height:52,background:"transparent",color:T.text,border:`1px solid ${T.border}`,borderRadius:12,fontWeight:600,fontSize:14,cursor:"pointer"}}>↩ RETAKE</button>
-              <button onClick={()=>processDoc("document")} disabled={processing} style={{
-                flex:2,height:52,
-                background:processing?T.surface:T.gold,
-                color:processing?T.muted:"#000",
-                border:"none",borderRadius:12,fontWeight:800,fontSize:15,
-                cursor:processing?"not-allowed":"pointer",letterSpacing:"0.08em",
-                display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
-                {processing
-                  ?<><div style={{width:16,height:16,border:"2px solid rgba(0,0,0,0.25)",borderTop:"2px solid #000",borderRadius:"50%",animation:"spin 0.7s linear infinite"}}/> PROCESSING...</>
-                  :"⚡ SCAN DOCUMENT"}
-              </button>
-            </div>
-          </div>
-        </>
-      )}
-
-      {/* ══ STAGE 3: ENHANCE + CONFIRM ══ */}
-      {stage==="enhance"&&(
-        <>
-          <div style={{flexShrink:0,display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 16px",background:T.card,borderBottom:`1px solid ${T.border}`}}>
-            <div>
-              <div style={{color:T.gold,fontSize:14,fontWeight:700,letterSpacing:"0.12em"}}>🎨 ENHANCE & CONFIRM</div>
-              <div style={{color:T.muted,fontSize:10,marginTop:1}}>Pick a filter · Confirm scan</div>
-            </div>
-            <button onClick={onClose} style={{height:34,padding:"0 12px",background:"transparent",border:`1px solid ${T.border}`,color:T.muted,borderRadius:8,cursor:"pointer",fontSize:12}}>✕</button>
-          </div>
-
-          {/* Filter strip */}
-          <div style={{flexShrink:0,display:"flex",gap:6,padding:"8px 10px",background:"#090909",borderBottom:`1px solid ${T.border}`,overflowX:"auto",WebkitOverflowScrolling:"touch"}}>
-            {FILTERS.map(f=>(
-              <button key={f.id} onClick={()=>refilter(f.id)} style={{
-                flexShrink:0,padding:"7px 12px",borderRadius:10,
-                background:filter===f.id?"rgba(212,175,55,0.12)":"transparent",
-                border:`1.5px solid ${filter===f.id?T.gold:T.border}`,
-                color:filter===f.id?T.gold:T.muted,
-                cursor:"pointer",fontFamily:"'Rajdhani',sans-serif"}}>
-                <div style={{fontSize:12,fontWeight:filter===f.id?700:500,whiteSpace:"nowrap"}}>{f.icon} {f.label}</div>
-                <div style={{fontSize:9,color:T.muted,marginTop:1}}>{f.desc}</div>
-              </button>
-            ))}
-          </div>
-
-          {/* Preview — fills remaining space, image fills it */}
-          <div style={{
-            flex:"1 1 0",minHeight:0,
-            overflow:"hidden",
-            background:"#060606",
-            display:"flex",alignItems:"center",justifyContent:"center",
-            padding:"8px",
-          }}>
-            {processing?(
-              <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:14}}>
-                <div style={{width:42,height:42,border:`3px solid rgba(212,175,55,0.15)`,borderTop:`3px solid ${T.gold}`,borderRadius:"50%",animation:"spin 0.7s linear infinite"}}/>
-                <div style={{color:T.muted,fontSize:12,letterSpacing:"0.1em"}}>ENHANCING...</div>
-              </div>
-            ):finalImage&&(
-              // Image fills the preview box — 95% width, contain aspect ratio
-              <img src={finalImage} alt="Scan" style={{
-                width:"95%",
-                maxHeight:"100%",
-                objectFit:"contain",
-                borderRadius:4,
-                boxShadow:"0 0 0 1px rgba(212,175,55,0.15),0 8px 32px rgba(0,0,0,0.8)",
-              }}/>
-            )}
-          </div>
-
-          {/* Metadata + actions */}
-          {!processing&&finalImage&&(
-            <div style={{flexShrink:0,padding:"5px 14px",background:T.surface,borderTop:`1px solid ${T.border}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-              <span style={{color:T.muted,fontSize:10}}>{outSize.w}×{outSize.h}px · {((outSize.w*outSize.h)/1e6).toFixed(1)}MP</span>
-              <span style={{background:"rgba(34,197,94,0.1)",color:"#22c55e",fontSize:10,padding:"3px 10px",borderRadius:99,fontWeight:700}}>✓ READY</span>
+          {/* Status badge */}
+          {!camErr&&(
+            <div style={{
+              position:"absolute",top:16,left:"50%",transform:"translateX(-50%)",
+              background:docFound?"rgba(34,197,94,0.18)":"rgba(0,0,0,0.70)",
+              border:`1px solid ${docFound?"#22c55e":"rgba(212,175,55,0.45)"}`,
+              color:docFound?"#22c55e":T.gold,
+              padding:"7px 20px",borderRadius:99,fontSize:13,fontWeight:700,
+              letterSpacing:"0.1em",whiteSpace:"nowrap",backdropFilter:"blur(12px)",
+              pointerEvents:"none",transition:"all 0.25s",
+            }}>
+              {docFound?(autoSnap&&stableN>0?`⏱ HOLD STILL... ${stableN}/5`:"✓ TICKET DETECTED"):"📷 POINT CAMERA AT TICKET"}
             </div>
           )}
-          <div style={{flexShrink:0,background:T.card,borderTop:`1px solid ${T.border}`,padding:"10px 14px 14px"}}>
-            <div style={{display:"flex",gap:10}}>
-              <button onClick={()=>{setStage("adjust");setFinalImage(null);setZoom(1);}} style={{flex:1,height:52,background:"transparent",color:T.text,border:`1px solid ${T.border}`,borderRadius:12,fontWeight:600,fontSize:14,cursor:"pointer"}}>← RE-ADJUST</button>
-              <button disabled={processing||!finalImage} onClick={()=>onUse(finalImage)} style={{
-                flex:2,height:52,
-                background:!processing&&finalImage?T.gold:T.surface,
-                color:!processing&&finalImage?"#000":T.muted,
-                border:"none",borderRadius:12,fontWeight:800,fontSize:15,
-                cursor:!processing&&finalImage?"pointer":"not-allowed",
-                letterSpacing:"0.08em"}}>✓ USE THIS SCAN</button>
+
+          {/* Progress ring */}
+          {docFound&&autoSnap&&stableN>0&&(
+            <div style={{position:"absolute",bottom:14,left:"50%",transform:"translateX(-50%)",width:62,height:62,pointerEvents:"none"}}>
+              <svg viewBox="0 0 62 62" style={{transform:"rotate(-90deg)"}}>
+                <circle cx="31" cy="31" r="27" fill="none" stroke="rgba(34,197,94,0.2)" strokeWidth="5"/>
+                <circle cx="31" cy="31" r="27" fill="none" stroke="#22c55e" strokeWidth="5"
+                  strokeDasharray={`${2*Math.PI*27}`}
+                  strokeDashoffset={`${2*Math.PI*27*(1-stableN/5)}`}
+                  style={{transition:"stroke-dashoffset 0.2s"}}/>
+              </svg>
+            </div>
+          )}
+
+          {camErr&&(
+            <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16,padding:28}}>
+              <div style={{fontSize:52}}>📷</div>
+              <div style={{color:T.muted,fontSize:14,textAlign:"center",lineHeight:1.6}}>Camera unavailable.<br/>Upload a photo instead.</div>
+              <button onClick={()=>fileR.current.click()} style={{padding:"14px 36px",background:T.gold,color:"#000",border:"none",borderRadius:12,fontWeight:800,fontSize:15,cursor:"pointer"}}>📁 UPLOAD PHOTO</button>
+            </div>
+          )}
+          {busy&&<Spin/>}
+        </div>
+
+        <div style={{flexShrink:0,background:T.card,borderTop:`1px solid ${T.border}`,padding:"12px 16px 16px"}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 14px",background:T.surface,borderRadius:12,border:`1px solid ${T.border}`,marginBottom:12}}>
+            <div>
+              <div style={{color:T.text,fontSize:13,fontWeight:600}}>Auto-Capture</div>
+              <div style={{color:T.muted,fontSize:10,marginTop:1}}>Snaps automatically when stable</div>
+            </div>
+            <div onClick={()=>setAutoSnap(v=>!v)} style={{width:50,height:28,borderRadius:14,cursor:"pointer",background:autoSnap?"#22c55e":T.border,position:"relative",transition:"background 0.2s",flexShrink:0}}>
+              <div style={{position:"absolute",top:4,left:autoSnap?26:4,width:20,height:20,borderRadius:"50%",background:"#fff",transition:"left 0.2s",boxShadow:"0 1px 4px rgba(0,0,0,0.3)"}}/>
             </div>
           </div>
-        </>
-      )}
+          <div style={{display:"flex",gap:10,marginBottom:10}}>
+            {!camErr&&(
+              <button onClick={doCapture} disabled={!camReady||busy}
+                style={{flex:2,height:56,background:camReady&&!busy?T.gold:T.surface,color:camReady&&!busy?"#000":T.muted,border:"none",borderRadius:14,fontWeight:800,fontSize:17,letterSpacing:"0.1em",cursor:camReady&&!busy?"pointer":"not-allowed",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+                <span style={{fontSize:20}}>📸</span> CAPTURE
+              </button>
+            )}
+            <button onClick={()=>fileR.current.click()}
+              style={{flex:1,height:56,background:T.surface,color:T.text,border:`1px solid ${T.border}`,borderRadius:14,fontWeight:600,fontSize:14,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>
+              <span>📁</span> Upload
+            </button>
+          </div>
+          <button onClick={onClose}
+            style={{width:"100%",height:42,background:"transparent",color:T.muted,border:`1px solid ${T.border}`,borderRadius:12,fontWeight:600,fontSize:13,cursor:"pointer"}}>
+            ✕ CANCEL
+          </button>
+        </div>
+      </>}
 
-      <canvas ref={capCanv} style={{display:"none"}}/>
-      <canvas ref={outCanv} style={{display:"none"}}/>
-      <input ref={fileRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={handleFile}/>
+      {/* ══ CROP ══ */}
+      {stage==="crop"&&<>
+        <div style={{flexShrink:0,display:"flex",alignItems:"center",justifyContent:"space-between",padding:"13px 16px",background:T.card,borderBottom:`1px solid ${T.border}`}}>
+          <div>
+            <div style={{color:T.gold,fontSize:14,fontWeight:700,letterSpacing:"0.12em"}}>✂ ADJUST CROP</div>
+            <div style={{color:T.muted,fontSize:10,marginTop:1}}>Drag handles · Pinch to zoom</div>
+          </div>
+          <div style={{display:"flex",gap:8,alignItems:"center"}}>
+            <button onClick={()=>setCropZoom(z=>Math.max(1,parseFloat((z-0.25).toFixed(2))))}
+              style={{width:36,height:36,background:T.surface,border:`1px solid ${T.border}`,borderRadius:8,color:T.text,fontSize:20,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>−</button>
+            <span style={{color:T.muted,fontSize:11,minWidth:36,textAlign:"center"}}>{Math.round(cropZoom*100)}%</span>
+            <button onClick={()=>setCropZoom(z=>Math.min(3,parseFloat((z+0.25).toFixed(2))))}
+              style={{width:36,height:36,background:T.surface,border:`1px solid ${T.border}`,borderRadius:8,color:T.text,fontSize:20,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>+</button>
+            <button onClick={onClose}
+              style={{height:36,padding:"0 12px",background:"transparent",border:`1px solid ${T.border}`,color:T.muted,borderRadius:8,cursor:"pointer",fontSize:12}}>✕</button>
+          </div>
+        </div>
+
+        <div style={{flex:"1 1 0",minHeight:0,overflow:"scroll",background:"#050505",WebkitOverflowScrolling:"touch",display:"flex",alignItems:"flex-start",justifyContent:"center"}}>
+          <canvas ref={cropR}
+            style={{
+              display:"block",flexShrink:0,touchAction:"none",cursor:"crosshair",
+              transform:`scale(${cropZoom})`,transformOrigin:"top center",
+              marginBottom:cropZoom>1?`${(cropZoom-1)*100}%`:0,
+            }}
+            onMouseDown={cropDown} onMouseMove={cropMove} onMouseUp={cropUp} onMouseLeave={cropUp}
+            onTouchStart={cropDown} onTouchMove={cropMove} onTouchEnd={cropUp}
+          />
+        </div>
+
+        <div style={{flexShrink:0,background:T.card,borderTop:`1px solid ${T.border}`,padding:"10px 14px 16px"}}>
+          <div style={{color:T.muted,fontSize:10,textAlign:"center",letterSpacing:"0.08em",marginBottom:10}}>
+            ⊕ DRAG THE 4 GOLD HANDLES TO THE TICKET CORNERS
+          </div>
+          <div style={{display:"flex",gap:10}}>
+            <button onClick={()=>{fullReset();startCam();}}
+              style={{flex:1,height:54,background:"transparent",color:T.text,border:`1px solid ${T.border}`,borderRadius:12,fontWeight:600,fontSize:14,cursor:"pointer"}}>
+              ↩ RETAKE
+            </button>
+            <button onClick={()=>processDoc("document")} disabled={busy}
+              style={{flex:2,height:54,background:busy?T.surface:T.gold,color:busy?T.muted:"#000",border:"none",borderRadius:12,fontWeight:800,fontSize:15,cursor:busy?"not-allowed":"pointer",letterSpacing:"0.08em",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+              {busy?<><div style={{width:16,height:16,border:"2px solid rgba(0,0,0,0.25)",borderTop:"2px solid #000",borderRadius:"50%",animation:"spin 0.7s linear infinite"}}/> PROCESSING...</>:"⚡ SCAN DOCUMENT"}
+            </button>
+          </div>
+        </div>
+      </>}
+
+      {/* ══ ENHANCE ══ */}
+      {stage==="enhance"&&<>
+        <div style={{flexShrink:0,display:"flex",alignItems:"center",justifyContent:"space-between",padding:"13px 16px",background:T.card,borderBottom:`1px solid ${T.border}`}}>
+          <div>
+            <div style={{color:T.gold,fontSize:14,fontWeight:700,letterSpacing:"0.12em"}}>🎨 ENHANCE & CONFIRM</div>
+            <div style={{color:T.muted,fontSize:10,marginTop:1}}>Choose filter · Confirm scan</div>
+          </div>
+          <button onClick={onClose} style={{height:36,padding:"0 12px",background:"transparent",border:`1px solid ${T.border}`,color:T.muted,borderRadius:8,cursor:"pointer",fontSize:12}}>✕</button>
+        </div>
+
+        <div style={{flexShrink:0,display:"flex",gap:6,padding:"8px 10px",background:"#090909",borderBottom:`1px solid ${T.border}`,overflowX:"auto",WebkitOverflowScrolling:"touch"}}>
+          {FILTERS.map(f=>(
+            <button key={f.id} onClick={()=>{if(!busy)processDoc(f.id);}} style={{
+              flexShrink:0,padding:"7px 14px",borderRadius:10,
+              background:filter===f.id?"rgba(212,175,55,0.12)":"transparent",
+              border:`1.5px solid ${filter===f.id?T.gold:T.border}`,
+              color:filter===f.id?T.gold:T.muted,cursor:"pointer",fontFamily:"'Rajdhani',sans-serif",
+            }}>
+              <div style={{fontSize:12,fontWeight:filter===f.id?700:500,whiteSpace:"nowrap"}}>{f.icon} {f.label}</div>
+              <div style={{fontSize:9,color:T.muted,marginTop:1}}>{f.desc}</div>
+            </button>
+          ))}
+        </div>
+
+        <div style={{flex:"1 1 0",minHeight:0,overflow:"hidden",background:"#050505",display:"flex",alignItems:"center",justifyContent:"center",padding:10,position:"relative"}}>
+          {busy&&<Spin/>}
+          {!busy&&finalImg&&(
+            <img src={finalImg} alt="Scan"
+              style={{width:"95%",maxHeight:"100%",objectFit:"contain",borderRadius:4,boxShadow:"0 0 0 1px rgba(212,175,55,0.15),0 8px 32px rgba(0,0,0,0.85)"}}/>
+          )}
+        </div>
+
+        {!busy&&finalImg&&(
+          <div style={{flexShrink:0,padding:"5px 16px",background:T.surface,borderTop:`1px solid ${T.border}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <span style={{color:T.muted,fontSize:10}}>{outSz.w}×{outSz.h}px · {((outSz.w*outSz.h)/1e6).toFixed(1)}MP</span>
+            <span style={{background:"rgba(34,197,94,0.1)",color:"#22c55e",fontSize:10,padding:"3px 10px",borderRadius:99,fontWeight:700}}>✓ SCAN READY</span>
+          </div>
+        )}
+
+        <div style={{flexShrink:0,background:T.card,borderTop:`1px solid ${T.border}`,padding:"10px 14px 16px"}}>
+          <div style={{display:"flex",gap:10}}>
+            <button onClick={()=>{setStage("crop");setFinalImg(null);setCropZoom(1);setTick(n=>n+1);}}
+              style={{flex:1,height:54,background:"transparent",color:T.text,border:`1px solid ${T.border}`,borderRadius:12,fontWeight:600,fontSize:14,cursor:"pointer"}}>
+              ← RE-ADJUST
+            </button>
+            <button disabled={busy||!finalImg} onClick={()=>onUse(finalImg)}
+              style={{flex:2,height:54,background:!busy&&finalImg?T.gold:T.surface,color:!busy&&finalImg?"#000":T.muted,border:"none",borderRadius:12,fontWeight:800,fontSize:15,cursor:!busy&&finalImg?"pointer":"not-allowed",letterSpacing:"0.08em"}}>
+              ✓ USE THIS SCAN
+            </button>
+          </div>
+        </div>
+      </>}
+
+      <canvas ref={capR} style={{display:"none"}}/>
+      <canvas ref={outR} style={{display:"none"}}/>
+      <input  ref={fileR} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={handleFile}/>
     </div>
   );
 }
