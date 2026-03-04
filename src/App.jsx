@@ -466,6 +466,7 @@ function Queue({ phone, onEdit, onBack }) {
         );
       })}
     </PageShell>
+    </>
   );
 }
 
