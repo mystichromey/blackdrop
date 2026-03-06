@@ -1190,29 +1190,59 @@ function SubmitTicket({ phone, onComplete, editTicket }) {
     return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
   })();
 
-  const [form, setForm] = useState(() => editTicket ? {
-    client: editTicket["Client"] || "",
-    fieldTicket: editTicket["Field Ticket #"] || "",
-    dispatch: editTicket["Dispatch #"] || "",
-    unit: editTicket["Unit #"] || "",
-    driver: editTicket["Driver"] || "",
-    workDate: editTicket["Service Date"] || today,
-    wellLease: editTicket["Well/Lease"] || "",
-    notes: editTicket["Notes"] || "",
-    fieldTicketImage: "",
-    startTime: editTicket["Start Time"] || "",
-    endTime: editTicket["End Time"] || "",
-    hourlyRate: editTicket["Hourly Rate"] || "",
-  } : {
-    client: "", fieldTicket: "", dispatch: "", unit: "",
-    driver: "", workDate: today, wellLease: "", notes: "", fieldTicketImage: "",
-    startTime: "", endTime: "", hourlyRate: "",
+  const [form, setForm] = useState(() => {
+    if (editTicket) {
+      return {
+        client: editTicket["Client"] || "",
+        fieldTicket: editTicket["Field Ticket #"] || "",
+        dispatch: editTicket["Dispatch #"] || "",
+        unit: editTicket["Unit #"] || "",
+        driver: editTicket["Driver"] || "",
+        workDate: editTicket["Service Date"] || today,
+        wellLease: editTicket["Well/Lease"] || "",
+        notes: editTicket["Notes"] || "",
+        fieldTicketImage: "",
+        startTime: editTicket["Start Time"] || "",
+        endTime: editTicket["End Time"] || ""
+      };
+    }
+    try {
+      const saved = localStorage.getItem("bd_draft_form");
+      if (saved) return JSON.parse(saved);
+    } catch { }
+    return {
+      client: "", fieldTicket: "", dispatch: "", unit: "",
+      driver: "", workDate: today, wellLease: "", notes: "", fieldTicketImage: "",
+      startTime: "", endTime: ""
+    };
   });
 
-  const [loads, setLoads] = useState([{
-    id: 1, geminiRef: "", loadTicket: "", fluid: "Fresh Water",
-    bbls: "", manifestOps: { washOut: false, unload: false }, verificationImage: ""
-  }]);
+  const [loads, setLoads] = useState(() => {
+    if (editTicket) return [{
+      id: 1, geminiRef: "", loadTicket: "", fluid: "Fresh Water",
+      bbls: "", manifestOps: { washOut: false, unload: false }, verificationImage: ""
+    }];
+    try {
+      const saved = localStorage.getItem("bd_draft_loads");
+      if (saved) return JSON.parse(saved);
+    } catch { }
+    return [{
+      id: 1, geminiRef: "", loadTicket: "", fluid: "Fresh Water",
+      bbls: "", manifestOps: { washOut: false, unload: false }, verificationImage: ""
+    }];
+  });
+
+  useEffect(() => {
+    if (!editTicket) {
+      try { localStorage.setItem("bd_draft_form", JSON.stringify(form)); } catch { }
+    }
+  }, [form, editTicket]);
+
+  useEffect(() => {
+    if (!editTicket) {
+      try { localStorage.setItem("bd_draft_loads", JSON.stringify(loads)); } catch { }
+    }
+  }, [loads, editTicket]);
 
   const [submissionId] = useState(editTicket ? editTicket["Submission ID"] : null);
   const [scanTarget, setScanTarget] = useState(null);
@@ -1311,6 +1341,11 @@ function SubmitTicket({ phone, onComplete, editTicket }) {
         body: JSON.stringify(payload),
         signal: controller.signal
       });
+      if (!res.ok) throw new Error("Network response was not ok");
+      try {
+        localStorage.removeItem("bd_draft_form");
+        localStorage.removeItem("bd_draft_loads");
+      } catch { }
       clearTimeout(timeout);
       onComplete();
     } catch {
@@ -1423,36 +1458,22 @@ function SubmitTicket({ phone, onComplete, editTicket }) {
           </div>
         </div>
 
-        <Label text="Hourly Rate ($)" />
-        <Input
-          type="number" placeholder="e.g. 85"
-          value={form.hourlyRate}
-          onChange={e => update("hourlyRate", e.target.value)}
-        />
-
         {form.startTime && form.endTime && (() => {
           const [sh, sm] = form.startTime.split(":").map(Number);
           const [eh, em] = form.endTime.split(":").map(Number);
           let mins = (eh * 60 + em) - (sh * 60 + sm);
           if (mins < 0) mins += 1440;
           const hrs = (mins / 60).toFixed(2);
-          const total = form.hourlyRate ? (parseFloat(hrs) * parseFloat(form.hourlyRate)).toFixed(2) : null;
           return (
             <div style={{
-              marginTop: 10, padding: "10px 14px", background: "rgba(212,175,55,0.08)",
-              border: "1px solid rgba(212,175,55,0.25)", borderRadius: 8,
+              marginTop: 12, padding: "10px 12px", background: "rgba(212,175,55,0.08)",
+              border: "1px solid rgba(212,175,55,0.2)", borderRadius: 6,
               display: "flex", justifyContent: "space-between", alignItems: "center"
             }}>
-              <div>
-                <div style={{ color: T.muted, fontSize: 10 }}>TOTAL HOURS</div>
-                <div style={{ color: T.gold, fontFamily: "'Space Mono',monospace", fontWeight: 700, fontSize: 18 }}>{hrs} hrs</div>
+              <div style={{ color: T.gold }}>
+                <div style={{ fontSize: 10, letterSpacing: "0.05em", fontWeight: 700 }}>TOTAL HOURS</div>
+                <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "'Space Mono',monospace" }}>{hrs} <span style={{ fontSize: 12 }}>hrs</span></div>
               </div>
-              {total && (
-                <div style={{ textAlign: "right" }}>
-                  <div style={{ color: T.muted, fontSize: 10 }}>HOURS TOTAL</div>
-                  <div style={{ color: T.success, fontFamily: "'Space Mono',monospace", fontWeight: 700, fontSize: 18 }}>${total}</div>
-                </div>
-              )}
             </div>
           );
         })()}
@@ -1676,8 +1697,12 @@ export default function App() {
   injectGlobalStyles();
   const [phone, setPhone] = useState(() => { try { return localStorage.getItem("bd_phone"); } catch { return null; } });
   const [page, setPage] = useState(() => {
-    try { return (localStorage.getItem("bd_phone") && localStorage.getItem("bd_token")) ? "dashboard" : "login"; }
-    catch { return "login"; }
+    try {
+      if (localStorage.getItem("bd_phone") && localStorage.getItem("bd_token")) {
+        return localStorage.getItem("bd_draft_form") ? "submit" : "dashboard";
+      }
+    } catch { }
+    return "login";
   });
   const [editTicket, setEditTicket] = useState(null);
   function login(data) {
