@@ -418,36 +418,7 @@ function Dashboard({ phone, onLogout, onStartTicket, onOpenQueue }) {
   );
 }
 
-function Queue({ phone, onEdit, onBack }) {
-  const [tickets, setTickets] = useState([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem("bd_submitted_tickets") || "[]");
-      const offline = JSON.parse(localStorage.getItem("offlineTickets") || "[]");
-      const offlineFormatted = offline.map((t, i) => ({
-        "Submission ID": t.submissionId || `OFFLINE-${i + 1}`,
-        "Status": "PENDING (OFFLINE)",
-        "Client": t.client || "—",
-        "Field Ticket #": t.fieldTicket || "",
-        "Driver": t.driver || "",
-        "Timestamp": t._savedAt || "",
-        "Notes": t.notes || "",
-      }));
-      const all = [...offlineFormatted, ...stored].reverse();
-      setTickets(all);
-    } catch { setTickets([]); }
-    setLoading(false);
-  }, [phone]);
-
-  const counts = useMemo(() => ({
-    total: tickets.length,
-    pending: tickets.filter(t => (t["Status"] || "").includes("PENDING")).length,
-    bounce: tickets.filter(t => t["Status"] === "BOUNCE BACK").length,
-    approved: tickets.filter(t => t["Status"] === "APPROVED").length,
-  }), [tickets]);
-
+function Queue({ phone, onBack, onStartTicket }) {
   return (
     <PageShell maxW={520}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
@@ -460,112 +431,152 @@ function Queue({ phone, onEdit, onBack }) {
             color: T.gold, fontFamily: "'Rajdhani',sans-serif",
             fontSize: 18, fontWeight: 700, letterSpacing: "0.12em"
           }}>SUBMISSION QUEUE</div>
-          <div style={{ color: T.muted, fontSize: 11 }}>{counts.total} submissions found</div>
         </div>
       </div>
-
-      {!loading && counts.total > 0 && (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, marginBottom: 20 }}>
-          {[
-            { label: "Pending", val: counts.pending, color: T.warn },
-            { label: "Approved", val: counts.approved, color: T.success },
-            { label: "Bounce", val: counts.bounce, color: T.danger },
-          ].map(s => (
-            <div key={s.label} style={{
-              background: T.surface, borderRadius: 8, padding: "10px 12px",
-              border: `1px solid ${T.border}`, textAlign: "center"
-            }}>
-              <div style={{
-                color: s.color, fontSize: 22, fontWeight: 700,
-                fontFamily: "'Space Mono',monospace"
-              }}>{s.val}</div>
-              <div style={{ color: T.muted, fontSize: 10, marginTop: 2 }}>{s.label}</div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {loading && (
+      <div style={{
+        background: T.surface, borderRadius: 12, padding: "40px 24px",
+        border: `1px solid ${T.border}`, textAlign: "center"
+      }}>
+        <div style={{ fontSize: 48, marginBottom: 16 }}>📋</div>
         <div style={{
-          color: T.muted, textAlign: "center", padding: 40,
-          display: "flex", flexDirection: "column", alignItems: "center", gap: 12
-        }}>
-          <Spinner size={24} color={T.gold} />
-          Loading queue...
+          color: T.gold, fontFamily: "'Rajdhani',sans-serif",
+          fontSize: 16, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 10
+        }}>TICKETS SUBMITTED SUCCESSFULLY</div>
+        <div style={{ color: T.muted, fontSize: 13, lineHeight: 1.7, marginBottom: 24 }}>
+          All submitted tickets are recorded in the company spreadsheet.
+          Contact dispatch to check ticket status or for any corrections.
         </div>
-      )}
-
-      {!loading && tickets.length === 0 && (
-        <div style={{ color: T.muted, textAlign: "center", padding: 40 }}>
-          No submissions yet. Submit a ticket to see it here.
-        </div>
-      )}
-
-      {tickets.map((ticket, i) => {
-        const status = ticket["Status"] || "PENDING";
-        const isBounce = status === "BOUNCE BACK";
-        const isOffline = status.includes("OFFLINE");
-        return (
-          <div key={ticket["Submission ID"] || i} style={{
-            background: T.surface, borderRadius: 10, padding: 16, marginBottom: 12,
-            border: `1px solid ${isBounce ? "rgba(239,68,68,0.3)" : isOffline ? "rgba(245,158,11,0.3)" : T.border}`,
-            borderLeft: `3px solid ${isBounce ? T.danger : status === "APPROVED" ? T.success : T.warn}`
-          }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
-              <div style={{ fontFamily: "'Space Mono',monospace", color: T.text, fontSize: 12, fontWeight: 700 }}>
-                {ticket["Submission ID"] || `#${i + 1}`}
-              </div>
-              <StatusBadge status={status} />
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 16px" }}>
-              {[
-                ["Client", ticket["Client"] || "—"],
-                ["Created", ticket["Timestamp"] ? new Date(ticket["Timestamp"]).toLocaleString() : "—"],
-                ticket["Field Ticket #"] ? ["Field Ticket", ticket["Field Ticket #"]] : null,
-                ticket["Driver"] ? ["Driver", ticket["Driver"]] : null,
-              ].filter(Boolean).map(([k, v]) => (
-                <div key={k}>
-                  <div style={{ color: T.muted, fontSize: 10 }}>{k}</div>
-                  <div style={{ color: T.text, fontSize: 13 }}>{v}</div>
-                </div>
-              ))}
-            </div>
-            {ticket["Notes"] && (
-              <div style={{
-                marginTop: 10, padding: "8px 10px", background: T.bg,
-                borderRadius: 6, color: T.muted, fontSize: 12, fontStyle: "italic"
-              }}>
-                "{ticket["Notes"]}"
-              </div>
-            )}
-            {isOffline && (
-              <div style={{
-                marginTop: 10, padding: "6px 10px", background: "rgba(245,158,11,0.08)",
-                border: "1px solid rgba(245,158,11,0.2)", borderRadius: 6,
-                color: T.warn, fontSize: 11, textAlign: "center"
-              }}>
-                ⏳ Waiting for internet to sync
-              </div>
-            )}
-            {isBounce && (
-              <button onClick={() => onEdit(ticket)} style={{
-                marginTop: 12, width: "100%", padding: "10px 16px",
-                background: "rgba(212,175,55,0.1)", border: `1px solid ${T.goldDim}`,
-                color: T.gold, borderRadius: 8, fontWeight: 700, fontSize: 12,
-                letterSpacing: "0.1em", cursor: "pointer",
-                fontFamily: "'Rajdhani',sans-serif", transition: "all 0.15s"
-              }}
-                onMouseEnter={e => e.currentTarget.style.background = "rgba(212,175,55,0.2)"}
-                onMouseLeave={e => e.currentTarget.style.background = "rgba(212,175,55,0.1)"}
-              >
-                ✎ EDIT & RESUBMIT
-              </button>
-            )}
-          </div>
-        );
-      })}
+        <GoldBtn onClick={onStartTicket}>➕ SUBMIT NEW TICKET</GoldBtn>
+      </div>
     </PageShell>
   );
+}
+
+const counts = useMemo(() => ({
+  total: tickets.length,
+  pending: tickets.filter(t => (t["Status"] || "").includes("PENDING")).length,
+  bounce: tickets.filter(t => t["Status"] === "BOUNCE BACK").length,
+  approved: tickets.filter(t => t["Status"] === "APPROVED").length,
+}), [tickets]);
+
+return (
+  <PageShell maxW={520}>
+    <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
+      <button onClick={onBack} style={{
+        background: "transparent", border: `1px solid ${T.border}`,
+        color: T.muted, borderRadius: 8, padding: "6px 10px", cursor: "pointer", fontSize: 13
+      }}>← Back</button>
+      <div>
+        <div style={{
+          color: T.gold, fontFamily: "'Rajdhani',sans-serif",
+          fontSize: 18, fontWeight: 700, letterSpacing: "0.12em"
+        }}>SUBMISSION QUEUE</div>
+        <div style={{ color: T.muted, fontSize: 11 }}>{counts.total} submissions found</div>
+      </div>
+    </div>
+
+    {!loading && counts.total > 0 && (
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, marginBottom: 20 }}>
+        {[
+          { label: "Pending", val: counts.pending, color: T.warn },
+          { label: "Approved", val: counts.approved, color: T.success },
+          { label: "Bounce", val: counts.bounce, color: T.danger },
+        ].map(s => (
+          <div key={s.label} style={{
+            background: T.surface, borderRadius: 8, padding: "10px 12px",
+            border: `1px solid ${T.border}`, textAlign: "center"
+          }}>
+            <div style={{
+              color: s.color, fontSize: 22, fontWeight: 700,
+              fontFamily: "'Space Mono',monospace"
+            }}>{s.val}</div>
+            <div style={{ color: T.muted, fontSize: 10, marginTop: 2 }}>{s.label}</div>
+          </div>
+        ))}
+      </div>
+    )}
+
+    {loading && (
+      <div style={{
+        color: T.muted, textAlign: "center", padding: 40,
+        display: "flex", flexDirection: "column", alignItems: "center", gap: 12
+      }}>
+        <Spinner size={24} color={T.gold} />
+        Loading queue...
+      </div>
+    )}
+
+    {!loading && tickets.length === 0 && (
+      <div style={{ color: T.muted, textAlign: "center", padding: 40 }}>
+        No submissions yet. Submit a ticket to see it here.
+      </div>
+    )}
+
+    {tickets.map((ticket, i) => {
+      const status = ticket["Status"] || "PENDING";
+      const isBounce = status === "BOUNCE BACK";
+      const isOffline = status.includes("OFFLINE");
+      return (
+        <div key={ticket["Submission ID"] || i} style={{
+          background: T.surface, borderRadius: 10, padding: 16, marginBottom: 12,
+          border: `1px solid ${isBounce ? "rgba(239,68,68,0.3)" : isOffline ? "rgba(245,158,11,0.3)" : T.border}`,
+          borderLeft: `3px solid ${isBounce ? T.danger : status === "APPROVED" ? T.success : T.warn}`
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
+            <div style={{ fontFamily: "'Space Mono',monospace", color: T.text, fontSize: 12, fontWeight: 700 }}>
+              {ticket["Submission ID"] || `#${i + 1}`}
+            </div>
+            <StatusBadge status={status} />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 16px" }}>
+            {[
+              ["Client", ticket["Client"] || "—"],
+              ["Created", ticket["Timestamp"] ? new Date(ticket["Timestamp"]).toLocaleString() : "—"],
+              ticket["Field Ticket #"] ? ["Field Ticket", ticket["Field Ticket #"]] : null,
+              ticket["Driver"] ? ["Driver", ticket["Driver"]] : null,
+            ].filter(Boolean).map(([k, v]) => (
+              <div key={k}>
+                <div style={{ color: T.muted, fontSize: 10 }}>{k}</div>
+                <div style={{ color: T.text, fontSize: 13 }}>{v}</div>
+              </div>
+            ))}
+          </div>
+          {ticket["Notes"] && (
+            <div style={{
+              marginTop: 10, padding: "8px 10px", background: T.bg,
+              borderRadius: 6, color: T.muted, fontSize: 12, fontStyle: "italic"
+            }}>
+              "{ticket["Notes"]}"
+            </div>
+          )}
+          {isOffline && (
+            <div style={{
+              marginTop: 10, padding: "6px 10px", background: "rgba(245,158,11,0.08)",
+              border: "1px solid rgba(245,158,11,0.2)", borderRadius: 6,
+              color: T.warn, fontSize: 11, textAlign: "center"
+            }}>
+              ⏳ Waiting for internet to sync
+            </div>
+          )}
+          {isBounce && (
+            <button onClick={() => onEdit(ticket)} style={{
+              marginTop: 12, width: "100%", padding: "10px 16px",
+              background: "rgba(212,175,55,0.1)", border: `1px solid ${T.goldDim}`,
+              color: T.gold, borderRadius: 8, fontWeight: 700, fontSize: 12,
+              letterSpacing: "0.1em", cursor: "pointer",
+              fontFamily: "'Rajdhani',sans-serif", transition: "all 0.15s"
+            }}
+              onMouseEnter={e => e.currentTarget.style.background = "rgba(212,175,55,0.2)"}
+              onMouseLeave={e => e.currentTarget.style.background = "rgba(212,175,55,0.1)"}
+            >
+              ✎ EDIT & RESUBMIT
+            </button>
+          )}
+        </div>
+      );
+    })}
+  </PageShell>
+);
 }
 
 
@@ -1113,42 +1124,36 @@ function NotesField({ value, onChange }) {
   const [translating, setTranslating] = useState(false);
   const [translated, setTranslated] = useState(false);
   const [originalText, setOriginalText] = useState("");
-  const debounceRef = useRef(null);
-  const skipRef = useRef(false);
 
-  useEffect(() => {
-    if (translated) return;
-    if (skipRef.current) { skipRef.current = false; return; }
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(async () => {
-      const text = (value || '').trim();
-      if (!text || text.length < 6) return;
-      setTranslating(true);
-      try {
-        const result = await detectAndTranslate(text);
-        if (result) {
+  async function doTranslate() {
+    const text = (value || '').trim();
+    if (!text || text.length < 3 || translating) return;
+    setTranslating(true);
+    try {
+      const res = await fetch('/api/translate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.language === 'es' && data.translated && data.translated.trim().toLowerCase() !== text.toLowerCase()) {
           setOriginalText(text);
-          skipRef.current = true;
-          onChange(result);
+          onChange(data.translated);
           setTranslated(true);
         }
-      } catch { }
-      setTranslating(false);
-    }, 1500);
-    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
-  }, [value]);
+      }
+    } catch { }
+    setTranslating(false);
+  }
 
   function handleChange(e) {
-    if (translated) {
-      setTranslated(false);
-      setOriginalText("");
-    }
+    if (translated) { setTranslated(false); setOriginalText(""); }
     onChange(e.target.value);
   }
 
   function revert() {
     if (!originalText) return;
-    skipRef.current = true;
     onChange(originalText);
     setTranslated(false);
     setOriginalText("");
@@ -1173,13 +1178,23 @@ function NotesField({ value, onChange }) {
           </div>
         )}
       </div>
+      {!translated && value && value.trim().length >= 3 && (
+        <button onClick={doTranslate} disabled={translating} style={{
+          marginTop: 6, padding: "6px 12px", background: "rgba(212,175,55,0.08)",
+          border: "1px solid rgba(212,175,55,0.2)", borderRadius: 6,
+          color: T.gold, fontSize: 11, fontWeight: 700, cursor: "pointer",
+          letterSpacing: "0.06em", transition: "all 0.15s"
+        }}>
+          🌐 TRANSLATE IF SPANISH
+        </button>
+      )}
       {translated && (
         <div style={{
           marginTop: 6, display: "flex", alignItems: "center", justifyContent: "space-between",
           padding: "6px 10px", background: "rgba(212,175,55,0.08)",
           border: "1px solid rgba(212,175,55,0.2)", borderRadius: 6
         }}>
-          <span style={{ color: T.gold, fontSize: 11 }}>🌐 Auto-translated from Spanish</span>
+          <span style={{ color: T.gold, fontSize: 11 }}>🌐 Translated from Spanish</span>
           <button onClick={revert} style={{
             background: "transparent", border: "none",
             color: T.muted, fontSize: 11, cursor: "pointer", textDecoration: "underline"
@@ -1188,6 +1203,80 @@ function NotesField({ value, onChange }) {
       )}
     </div>
   );
+}
+
+useEffect(() => {
+  if (translated) return;
+  if (skipRef.current) { skipRef.current = false; return; }
+  if (debounceRef.current) clearTimeout(debounceRef.current);
+  debounceRef.current = setTimeout(async () => {
+    const text = (value || '').trim();
+    if (!text || text.length < 6) return;
+    setTranslating(true);
+    try {
+      const result = await detectAndTranslate(text);
+      if (result) {
+        setOriginalText(text);
+        skipRef.current = true;
+        onChange(result);
+        setTranslated(true);
+      }
+    } catch { }
+    setTranslating(false);
+  }, 1500);
+  return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+}, [value]);
+
+function handleChange(e) {
+  if (translated) {
+    setTranslated(false);
+    setOriginalText("");
+  }
+  onChange(e.target.value);
+}
+
+function revert() {
+  if (!originalText) return;
+  skipRef.current = true;
+  onChange(originalText);
+  setTranslated(false);
+  setOriginalText("");
+}
+
+return (
+  <div>
+    <div style={{ position: "relative" }}>
+      <Textarea
+        placeholder="Add job specifics…"
+        value={value}
+        onChange={handleChange}
+        style={translating ? { opacity: 0.6 } : {}}
+      />
+      {translating && (
+        <div style={{
+          position: "absolute", top: 10, right: 10,
+          display: "flex", alignItems: "center", gap: 6
+        }}>
+          <Spinner size={12} color={T.gold} />
+          <span style={{ color: T.gold, fontSize: 10, fontWeight: 700, letterSpacing: "0.08em" }}>TRANSLATING...</span>
+        </div>
+      )}
+    </div>
+    {translated && (
+      <div style={{
+        marginTop: 6, display: "flex", alignItems: "center", justifyContent: "space-between",
+        padding: "6px 10px", background: "rgba(212,175,55,0.08)",
+        border: "1px solid rgba(212,175,55,0.2)", borderRadius: 6
+      }}>
+        <span style={{ color: T.gold, fontSize: 11 }}>🌐 Auto-translated from Spanish</span>
+        <button onClick={revert} style={{
+          background: "transparent", border: "none",
+          color: T.muted, fontSize: 11, cursor: "pointer", textDecoration: "underline"
+        }}>Revert</button>
+      </div>
+    )}
+  </div>
+);
 }
 
 function SubmitTicket({ phone, onComplete, editTicket }) {
@@ -1303,24 +1392,6 @@ function SubmitTicket({ phone, onComplete, editTicket }) {
     setHasSignature(false);
   }
 
-  async function submitTicket(payload) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 60000);
-    try {
-      const res = await fetch('/api/tickets', {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem('bd_token')}` },
-        body: JSON.stringify(payload),
-        signal: controller.signal
-      });
-      clearTimeout(timeout);
-      return true;
-    } catch (err) {
-      clearTimeout(timeout);
-      throw err;
-    }
-  }
-
   async function handleSubmit() {
     if (!isComplete || isSubmitting) return;
     setIsSubmitting(true); setSubmitError("");
@@ -1329,72 +1400,21 @@ function SubmitTicket({ phone, onComplete, editTicket }) {
       submissionId: submissionId || sid, phone, ...form, loads, totalBBLS,
       signature: sigRef.current.toDataURL("image/png")
     };
-    const ticketRecord = {
-      "Submission ID": payload.submissionId,
-      "Status": "PENDING",
-      "Client": form.client,
-      "Field Ticket #": form.fieldTicket,
-      "Dispatch #": form.dispatch,
-      "Unit #": form.unit,
-      "Driver": form.driver,
-      "Service Date": form.workDate,
-      "Well/Lease": form.wellLease,
-      "Notes": form.notes,
-      "Timestamp": new Date().toISOString(),
-      "Start Time": form.startTime,
-      "End Time": form.endTime,
-      "Hourly Rate": form.hourlyRate,
-    };
     try {
-      await submitTicket(payload);
-      try {
-        const stored = JSON.parse(localStorage.getItem("bd_submitted_tickets") || "[]");
-        stored.push(ticketRecord);
-        localStorage.setItem("bd_submitted_tickets", JSON.stringify(stored.slice(-100)));
-      } catch { }
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 12000);
+      const res = await fetch('/api/tickets', {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem('bd_token')}` },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+      clearTimeout(timeout);
       onComplete();
     } catch {
-      try {
-        const q = JSON.parse(localStorage.getItem("offlineTickets") || "[]");
-        q.push({ ...payload, _savedAt: new Date().toISOString() });
-        localStorage.setItem("offlineTickets", JSON.stringify(q));
-        alert("No internet — ticket saved offline and will sync automatically when you're back online.");
-        onComplete();
-      } catch {
-        setSubmitError("Submission failed. Please try again or check your connection.");
-      }
+      setSubmitError("Submission may have failed. Check your connection and try again.");
     } finally { setIsSubmitting(false); }
   }
-
-  useEffect(() => {
-    async function syncOffline() {
-      let q;
-      try { q = JSON.parse(localStorage.getItem("offlineTickets") || "[]"); } catch { return; }
-      if (!q.length) return;
-      const remaining = [];
-      for (const t of q) {
-        try {
-          const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), 60000);
-          const res = await fetch('/api/tickets', {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem('bd_token')}` },
-            body: JSON.stringify(t),
-            signal: controller.signal
-          });
-          clearTimeout(timeout);
-          if (!res.ok) remaining.push(t);
-        } catch { remaining.push(t); }
-      }
-      try {
-        if (remaining.length) localStorage.setItem("offlineTickets", JSON.stringify(remaining));
-        else localStorage.removeItem("offlineTickets");
-      } catch { }
-    }
-    window.addEventListener("online", syncOffline);
-    syncOffline();
-    return () => window.removeEventListener("online", syncOffline);
-  }, []);
 
   const sectionStyle = {
     background: T.surface, borderRadius: 10, padding: "16px",
