@@ -418,7 +418,32 @@ function Dashboard({ phone, onLogout, onStartTicket, onOpenQueue }) {
   );
 }
 
-function Queue({ phone, onBack, onStartTicket }) {
+function Queue({ phone, onEdit, onBack }) {
+  const [tickets, setTickets] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function load() {
+      try {
+        const res = await fetch(`/api/tickets?mode=queue`, {
+          headers: { "Authorization": `Bearer ${localStorage.getItem('bd_token')}` }
+        });
+        const json = await res.json();
+        const data = json.data || [];
+        setTickets(Array.isArray(data) ? data.reverse() : []);
+      } catch { setTickets([]); }
+      setLoading(false);
+    }
+    load();
+  }, [phone]);
+
+  const counts = useMemo(() => ({
+    total: tickets.length,
+    pending: tickets.filter(t => (t["Status"] || "").includes("PENDING")).length,
+    bounce: tickets.filter(t => t["Status"] === "BOUNCE BACK").length,
+    approved: tickets.filter(t => t["Status"] === "APPROVED").length,
+  }), [tickets]);
+
   return (
     <PageShell maxW={520}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
@@ -431,23 +456,100 @@ function Queue({ phone, onBack, onStartTicket }) {
             color: T.gold, fontFamily: "'Rajdhani',sans-serif",
             fontSize: 18, fontWeight: 700, letterSpacing: "0.12em"
           }}>SUBMISSION QUEUE</div>
+          <div style={{ color: T.muted, fontSize: 11 }}>{counts.total} submissions found</div>
         </div>
       </div>
-      <div style={{
-        background: T.surface, borderRadius: 12, padding: "40px 24px",
-        border: `1px solid ${T.border}`, textAlign: "center"
-      }}>
-        <div style={{ fontSize: 48, marginBottom: 16 }}>📋</div>
+
+      {!loading && counts.total > 0 && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, marginBottom: 20 }}>
+          {[
+            { label: "Pending", val: counts.pending, color: T.warn },
+            { label: "Approved", val: counts.approved, color: T.success },
+            { label: "Bounce", val: counts.bounce, color: T.danger },
+          ].map(s => (
+            <div key={s.label} style={{
+              background: T.surface, borderRadius: 8, padding: "10px 12px",
+              border: `1px solid ${T.border}`, textAlign: "center"
+            }}>
+              <div style={{
+                color: s.color, fontSize: 22, fontWeight: 700,
+                fontFamily: "'Space Mono',monospace"
+              }}>{s.val}</div>
+              <div style={{ color: T.muted, fontSize: 10, marginTop: 2 }}>{s.label}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {loading && (
         <div style={{
-          color: T.gold, fontFamily: "'Rajdhani',sans-serif",
-          fontSize: 16, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 10
-        }}>TICKETS SUBMITTED SUCCESSFULLY</div>
-        <div style={{ color: T.muted, fontSize: 13, lineHeight: 1.7, marginBottom: 24 }}>
-          All submitted tickets are recorded in the company spreadsheet.
-          Contact dispatch to check ticket status or for any corrections.
+          color: T.muted, textAlign: "center", padding: 40,
+          display: "flex", flexDirection: "column", alignItems: "center", gap: 12
+        }}>
+          <Spinner size={24} color={T.gold} />
+          Loading queue...
         </div>
-        <GoldBtn onClick={onStartTicket}>➕ SUBMIT NEW TICKET</GoldBtn>
-      </div>
+      )}
+
+      {!loading && tickets.length === 0 && (
+        <div style={{ color: T.muted, textAlign: "center", padding: 40 }}>
+          No submissions found in system.
+        </div>
+      )}
+
+      {tickets.map((ticket, i) => {
+        const status = ticket["Status"] || "PENDING";
+        const isBounce = status === "BOUNCE BACK";
+        return (
+          <div key={ticket["Submission ID"] || i} style={{
+            background: T.surface, borderRadius: 10, padding: 16, marginBottom: 12,
+            border: `1px solid ${isBounce ? "rgba(239,68,68,0.3)" : T.border}`,
+            borderLeft: `3px solid ${isBounce ? T.danger : status === "APPROVED" ? T.success : T.warn}`
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
+              <div style={{ fontFamily: "'Space Mono',monospace", color: T.text, fontSize: 12, fontWeight: 700 }}>
+                {ticket["Submission ID"] || `#${i + 1}`}
+              </div>
+              <StatusBadge status={status} />
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 16px" }}>
+              {[
+                ["Client", ticket["Client"] || "—"],
+                ["Created", ticket["Timestamp"] ? new Date(ticket["Timestamp"]).toLocaleString() : "—"],
+                ticket["Field Ticket #"] ? ["Field Ticket", ticket["Field Ticket #"]] : null,
+                ticket["Driver"] ? ["Driver", ticket["Driver"]] : null,
+              ].filter(Boolean).map(([k, v]) => (
+                <div key={k}>
+                  <div style={{ color: T.muted, fontSize: 10 }}>{k}</div>
+                  <div style={{ color: T.text, fontSize: 13 }}>{v}</div>
+                </div>
+              ))}
+            </div>
+            {ticket["Notes"] && (
+              <div style={{
+                marginTop: 10, padding: "8px 10px", background: T.bg,
+                borderRadius: 6, color: T.muted, fontSize: 12, fontStyle: "italic"
+              }}>
+                "{ticket["Notes"]}"
+              </div>
+            )}
+            {isBounce && (
+              <button onClick={() => onEdit(ticket)} style={{
+                marginTop: 12, width: "100%", padding: "10px 16px",
+                background: "rgba(212,175,55,0.1)", border: `1px solid ${T.goldDim}`,
+                color: T.gold, borderRadius: 8, fontWeight: 700, fontSize: 12,
+                letterSpacing: "0.1em", cursor: "pointer",
+                fontFamily: "'Rajdhani',sans-serif", transition: "all 0.15s"
+              }}
+                onMouseEnter={e => e.currentTarget.style.background = "rgba(212,175,55,0.2)"}
+                onMouseLeave={e => e.currentTarget.style.background = "rgba(212,175,55,0.1)"}
+              >
+                ✎ EDIT & RESUBMIT
+              </button>
+            )}
+          </div>
+        );
+      })}
     </PageShell>
   );
 }
@@ -577,7 +679,6 @@ return (
     })}
   </PageShell>
 );
-}
 
 
 function TicketSuccess({ onBack, onViewQueue }) {
@@ -1277,7 +1378,6 @@ return (
     )}
   </div>
 );
-}
 
 function SubmitTicket({ phone, onComplete, editTicket }) {
   const [isSubmitting, setIsSubmitting] = useState(false);

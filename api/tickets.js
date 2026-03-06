@@ -13,6 +13,28 @@ export default async function handler(req, res) {
         return res.status(401).json({ error: 'Invalid token' });
     }
 
+    if (req.method === 'GET') {
+        try {
+            const mode = req.query?.mode;
+            const url = mode === 'queue'
+                ? `${API_URL}?mode=queue&phone=${encodeURIComponent(phone)}`
+                : `${API_URL}`;
+
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 9500);
+            const response = await fetch(url, { signal: controller.signal });
+            clearTimeout(timeout);
+
+            const text = await response.text();
+            let data;
+            try { data = JSON.parse(text); } catch { data = []; }
+
+            return res.status(200).json({ data });
+        } catch {
+            return res.status(200).json({ data: [], error: 'Connection failed' });
+        }
+    }
+
     if (req.method === 'POST') {
         try {
             if (!req.body || typeof req.body !== 'object') {
